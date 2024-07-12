@@ -13,6 +13,7 @@ import (
 	"github.com/spirit-labs/tektite/proc"
 	"github.com/spirit-labs/tektite/types"
 	"math"
+	"sync"
 )
 
 type GetOperator struct {
@@ -80,6 +81,10 @@ func NewGetOperator(isRange bool, rangeStartExprs []expr.Expression, rangeEndExp
 
 func (g *GetOperator) CreateIterator(mappingID string, partID uint64, args *evbatch.Batch, highestVersion uint64,
 	processor proc.Processor) (iteration.Iterator, error) {
+
+	lock.Lock()
+	defer lock.Unlock()
+
 	partitionHash := proc.CalcPartitionHash(mappingID, partID)
 	var start, end []byte
 	if !g.isRange {
@@ -124,13 +129,25 @@ func (g *GetOperator) CreateIterator(mappingID string, partID uint64, args *evba
 			end = encoding.EncodeEntryPrefix(partitionHash, uint64(g.slabID+1), 24)
 		}
 	}
-	log.Debugf("node:%d processor:%d creating query iterator start:%v end:%v with max version:%d", g.nodeID, processor.ID(), start, end, highestVersion)
+	//log.Infof("node:%d processor:%d creating query iterator start:%v end:%v with max version:%d", g.nodeID, processor.ID(), start, end, highestVersion)
 	if g.streamMetaIterProvider != nil {
 		return g.streamMetaIterProvider.NewIterator(start, end, highestVersion, false)
 	} else {
-		return processor.NewIterator(start, end, highestVersion, false)
+		iter, err := processor.NewIterator(start, end, highestVersion, false)
+		return iter, err
+		//if err != nil {
+		//	return nil, err
+		//}
+		//mi, ok := iter.(*iteration.MergingIterator)
+		//if ok {
+		//	mi.Dump()
+		//}
+		//iter, err = processor.NewIterator(start, end, highestVersion, false)
+		//return iter, nil
 	}
 }
+
+var lock sync.Mutex
 
 func (g *GetOperator) CreateRangeStartKey(args *evbatch.Batch) ([]byte, error) {
 	return g.createKey(g.rangeStartExprs, args)

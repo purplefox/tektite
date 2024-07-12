@@ -617,7 +617,7 @@ func (lm *LevelManager) RegisterDeadVersionRange(versionRange VersionRange, clus
 	reprocess bool, replSeq int) error {
 	lm.lock.Lock()
 	defer lm.lock.Unlock()
-	log.Debugf("in levelmanager RegisterDeadVersionRange. replseq %d", replSeq)
+	log.Infof("in levelmanager RegisterDeadVersionRange %v. replseq %d", versionRange, replSeq)
 	if err := lm.checkStateForCommand(reprocess); err != nil {
 		return err
 	}

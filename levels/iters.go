@@ -75,9 +75,11 @@ func (r *RemoveExpiredEntriesIterator) isExpired(key []byte) (bool, error) {
 type RemoveDeadVersionsIterator struct {
 	iter              iteration2.Iterator
 	deadVersionRanges []VersionRange
+	current           common.KV
 }
 
 func NewRemoveDeadVersionsIterator(iter iteration2.Iterator, deadVersionRanges []VersionRange) *RemoveDeadVersionsIterator {
+	log.Debugf("creating dead versions iterator with range %d", deadVersionRanges)
 	return &RemoveDeadVersionsIterator{
 		iter:              iter,
 		deadVersionRanges: deadVersionRanges,
@@ -92,8 +94,10 @@ func (r *RemoveDeadVersionsIterator) Next() (bool, common.KV, error) {
 		}
 		dead := r.hasDeadVersion(curr.Key)
 		if !dead {
+			r.current = curr
 			return true, curr, nil
 		}
+		r.current = common.KV{}
 		if log.DebugEnabled {
 			log.Debugf("RemoveDeadVersionsIterator removed key %v (%s) value %v (%s)", curr.Key, string(curr.Key),
 				curr.Value, string(curr.Value))
@@ -102,7 +106,8 @@ func (r *RemoveDeadVersionsIterator) Next() (bool, common.KV, error) {
 }
 
 func (r *RemoveDeadVersionsIterator) Current() common.KV {
-	return r.iter.Current()
+	return r.current
+	//return r.iter.Current()
 }
 
 func (r *RemoveDeadVersionsIterator) Close() {

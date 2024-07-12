@@ -763,8 +763,8 @@ func (p *processor) persistReplBatchSeq(batch *ProcessBatch, memBatch *mem.Batch
 		Key:   key,
 		Value: val,
 	})
-	log.Debugf("node %d processor %d persisted batch seq %d at version %d -key %v", p.cfg.NodeID, p.id, batch.ReplSeq,
-		batch.Version, key)
+	//log.Infof("node %d processor %d persisted batch seq %d at version %d -key %v", p.cfg.NodeID, p.id, batch.ReplSeq,
+	//	batch.Version, key)
 	return memBatch
 }
 

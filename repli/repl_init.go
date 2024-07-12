@@ -132,6 +132,7 @@ func (r *replicator) MaybeReprocessQueue(lastFlushedVersion int) error {
 		return err
 	}
 	lastProcessedSeq := int(seq)
+	log.Infof("replicator %d loaded last repl seq %d", r.id, seq)
 
 	r.processor.SubmitAction(func() error {
 		if r.initialised {

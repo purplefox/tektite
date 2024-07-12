@@ -134,7 +134,7 @@ func (f *failureHandler) initiateFailure(clusterVersion int) error {
 
 	f.failingClusterVersion = clusterVersion
 
-	log.Debugf("node %d failureHandler version %d 1", f.procMgr.cfg.NodeID, f.failingClusterVersion)
+	log.Infof("node %d failureHandler version %d 1", f.procMgr.cfg.NodeID, f.failingClusterVersion)
 
 	// Stop flush removing any entries from replication queues
 	f.procMgr.disableReplBatchFlush(true) // don't lock as called from processor handler - lock already held
@@ -160,14 +160,14 @@ func (f *failureHandler) initiateFailure(clusterVersion int) error {
 		return true
 	})
 
-	log.Debugf("node %d failureHandler version %d 2", f.procMgr.cfg.NodeID, f.failingClusterVersion)
+	log.Infof("node %d failureHandler version %d 2", f.procMgr.cfg.NodeID, f.failingClusterVersion)
 
 	// Tell Stream manager to stop ingest while we are recovering
 	if err := f.procMgr.ingestNotifier.StopIngest(); err != nil {
 		return err
 	}
 
-	log.Debugf("node %d failureHandler version %d 3", f.procMgr.cfg.NodeID, f.failingClusterVersion)
+	log.Infof("node %d failureHandler version %d 3", f.procMgr.cfg.NodeID, f.failingClusterVersion)
 
 	// Tell vmgr failure is detected - once all processors have told it they have detected failure at the same
 	// cluster version it will wait for all in-progress versions to complete then register dead versions with the
@@ -181,7 +181,7 @@ func (f *failureHandler) initiateFailure(clusterVersion int) error {
 
 func (f *failureHandler) sendFailureDetected() error {
 	err := f.procMgr.vMgrClient.FailureDetected(f.liveProcessorCount, f.failingClusterVersion)
-	log.Debugf("node: %d failureHandler sending failureDetected, clusterVersion %d - returned %v", f.procMgr.cfg.NodeID,
+	log.Infof("node: %d failureHandler sending failureDetected, clusterVersion %d - returned %v", f.procMgr.cfg.NodeID,
 		f.failingClusterVersion, err)
 	if err == nil {
 		f.state = failureStateGettingLastFlushed
@@ -190,7 +190,7 @@ func (f *failureHandler) sendFailureDetected() error {
 }
 
 func (f *failureHandler) getLastFailureFlushedVersion() error {
-	log.Debugf("node: %d failureHandler calling GetLastFailureFlushedVersion, clusterVersion %d", f.procMgr.cfg.NodeID,
+	log.Infof("node: %d failureHandler calling GetLastFailureFlushedVersion, clusterVersion %d", f.procMgr.cfg.NodeID,
 		f.failingClusterVersion)
 	lastFlushedVersion, err := f.procMgr.vMgrClient.GetLastFailureFlushedVersion(f.failingClusterVersion)
 	if err != nil {
@@ -198,7 +198,7 @@ func (f *failureHandler) getLastFailureFlushedVersion() error {
 	}
 	// -2 return represents still waiting for versions to complete for required cluster version
 	if lastFlushedVersion == -2 || err != nil {
-		log.Debugf("node: %d calling GetLastFailureFlushedVersion for clusterVersion %d returned last flushed %d err %v",
+		log.Infof("node: %d calling GetLastFailureFlushedVersion for clusterVersion %d returned last flushed %d err %v",
 			f.procMgr.cfg.NodeID, f.failingClusterVersion, lastFlushedVersion, err)
 		// not all processors have called in to version manager or version manager is unavailable - we will retry
 		return nil
@@ -211,7 +211,7 @@ func (f *failureHandler) getLastFailureFlushedVersion() error {
 		return err
 	}
 
-	log.Debugf("node %d failureHandler version %d 5", f.procMgr.cfg.NodeID, f.failingClusterVersion)
+	log.Infof("node %d failureHandler version %d 5", f.procMgr.cfg.NodeID, f.failingClusterVersion)
 
 	// Reset the last processed checkpoints - otherwise if a version flush occurs replication queues could be
 	// truncated losing batches that we need to replay
@@ -227,7 +227,7 @@ func (f *failureHandler) getLastFailureFlushedVersion() error {
 		return true
 	})
 
-	log.Debugf("node %d failureHandler version %d 6", f.procMgr.cfg.NodeID, f.failingClusterVersion)
+	log.Infof("node %d failureHandler version %d 6", f.procMgr.cfg.NodeID, f.failingClusterVersion)
 
 	// Ingest has stopped and there is no processing in progress - we can now clear the local store.
 	// Note: it is critical that local store clear is done on all nodes *before* processing is enabled on any nodes
@@ -259,9 +259,9 @@ func (f *failureHandler) sendIsComplete() error {
 		return nil
 	}
 
-	log.Debugf("node %d failureHandler rolling back to last flushed %d", f.procMgr.cfg.NodeID, f.failureFlushedVersion)
+	log.Infof("node %d failureHandler rolling back to last flushed %d", f.procMgr.cfg.NodeID, f.failureFlushedVersion)
 
-	log.Debugf("node %d failureHandler version %d 9", f.procMgr.cfg.NodeID, f.failingClusterVersion)
+	log.Infof("node %d failureHandler version %d 9", f.procMgr.cfg.NodeID, f.failingClusterVersion)
 
 	// Tell replicators to replay their queues
 	f.procMgr.processors.Range(func(key, value any) bool {
@@ -281,12 +281,12 @@ func (f *failureHandler) sendIsComplete() error {
 		return err
 	}
 
-	log.Debugf("node %d failureHandler version %d 10", f.procMgr.cfg.NodeID, f.failingClusterVersion)
+	log.Infof("node %d failureHandler version %d 10", f.procMgr.cfg.NodeID, f.failingClusterVersion)
 
 	// Re-enable repl batch flushing
 	f.procMgr.disableReplBatchFlush(false)
 
-	log.Debugf("node %d failureHandler version %d 11", f.procMgr.cfg.NodeID, f.failingClusterVersion)
+	log.Infof("node %d failureHandler version %d 11", f.procMgr.cfg.NodeID, f.failingClusterVersion)
 
 	// Tell stream manager that kafka_in operators can now reset to offset as
 	// of LastFlushedVersion and restart. Producer endpoints can reset their dedup to LastFlushedVersion.
@@ -294,7 +294,7 @@ func (f *failureHandler) sendIsComplete() error {
 		return err
 	}
 
-	log.Debugf("node %d failureHandler version %d 12", f.procMgr.cfg.NodeID, f.failingClusterVersion)
+	log.Infof("node %d failureHandler version %d 12", f.procMgr.cfg.NodeID, f.failingClusterVersion)
 
 	f.state = failureStateIdle
 	f.failingClusterVersion = -1

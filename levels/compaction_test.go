@@ -1496,13 +1496,11 @@ func TestRemoveDeadVersionsIterator(t *testing.T) {
 		if !valid {
 			break
 		}
-		ver := math.MaxUint64 - binary.BigEndian.Uint64(entry.Key[len(entry.Key)-8:])
-		require.Equal(t, uint64(i), ver)
+		checkEntry(t, i, entry)
 
-		keyNoVer := entry.Key[:len(entry.Key)-8]
-		expectedKey := []byte(fmt.Sprintf("key-%05d", i))
-
-		require.Equal(t, expectedKey, keyNoVer)
+		// Also check the return from Current()
+		curr := me.Current()
+		checkEntry(t, i, curr)
 
 		i++
 
@@ -1512,6 +1510,48 @@ func TestRemoveDeadVersionsIterator(t *testing.T) {
 			i = 889
 		}
 	}
+}
+
+func TestRemoveDeadVersionsIteratorLiveEntryFollowedByDeadEntry(t *testing.T) {
+	si := &iteration.StaticIterator{}
+	key1 := []byte(fmt.Sprintf("key-%05d", 0))
+	val1 := []byte(fmt.Sprintf("val-%05d", 0))
+	key1 = encoding.EncodeVersion(key1, 100)
+	si.AddKV(key1, val1)
+
+	key2 := []byte(fmt.Sprintf("key-%05d", 1))
+	val2 := []byte(fmt.Sprintf("val-%05d", 1))
+	key2 = encoding.EncodeVersion(key2, 101)
+	si.AddKV(key2, val2)
+
+	me := NewRemoveDeadVersionsIterator(si, []VersionRange{VersionRange{
+		VersionStart: 101,
+		VersionEnd:   101,
+	}})
+
+	valid, curr, err := me.Next()
+	require.NoError(t, err)
+	require.True(t, valid)
+	require.Equal(t, key1, curr.Key)
+	require.Equal(t, val1, curr.Value)
+	curr = me.Current()
+	require.Equal(t, key1, curr.Key)
+	require.Equal(t, val1, curr.Value)
+
+	valid, curr, err = me.Next()
+	require.False(t, valid)
+
+	curr = me.Current()
+	require.Nil(t, curr.Key)
+	require.Nil(t, curr.Value)
+}
+
+func checkEntry(t *testing.T, i int, entry common.KV) {
+	ver := math.MaxUint64 - binary.BigEndian.Uint64(entry.Key[len(entry.Key)-8:])
+	require.Equal(t, uint64(i), ver)
+	keyNoVer := entry.Key[:len(entry.Key)-8]
+	expectedKey := []byte(fmt.Sprintf("key-%05d", i))
+	require.Equal(t, expectedKey, keyNoVer)
 }
 
 type testSlabRetentions struct {

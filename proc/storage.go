@@ -510,8 +510,8 @@ func (ps *ProcessorStore) createSSTableIterators(keyStart []byte, keyEnd []byte)
 			iters = append(iters, iteration.NewChainingIterator(itersInChain))
 		}
 	}
+	//log.Infof("dead versions are: %v", deadVersions)
 	if len(deadVersions) > 0 {
-		log.Debugf("dead versions are: %v", deadVersions)
 		// We have dead versions that we need to remove on this side. This occurs after failure when we rollback to
 		// the last good snapshot and we need to filter out any versions between that and when recovery completed.
 		for i, iter := range iters {
@@ -566,4 +566,8 @@ func (ps *ProcessorStore) NewIterator(keyStart []byte, keyEnd []byte, highestVer
 	}
 	iters = append(iters, ssTableIters...)
 	return iteration.NewMergingIterator(iters, preserveTombstones, highestVersion)
+	//if err != nil {
+	//	return nil, err
+	//}
+	//return iteration.NewRemoveDupIter(mi), nil
 }

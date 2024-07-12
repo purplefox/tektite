@@ -4,6 +4,7 @@ import (
 	"github.com/spirit-labs/tektite/encoding"
 	"github.com/spirit-labs/tektite/evbatch"
 	"github.com/spirit-labs/tektite/types"
+	"strings"
 )
 
 type StoreStreamOperator struct {
@@ -63,6 +64,7 @@ func (ts *StoreStreamOperator) HandleQueryBatch(*evbatch.Batch, QueryExecContext
 
 func (ts *StoreStreamOperator) HandleStreamBatch(batch *evbatch.Batch, execCtx StreamExecContext) (*evbatch.Batch, error) {
 	partitionHash := ts.hashCache.getHash(execCtx.PartitionID())
+	//log.Infof("store stream got batch with keys %s version %d processor %d partition %d", getKeys(batch), execCtx.WriteVersion(), execCtx.Processor().ID(), execCtx.PartitionID())
 	if ts.addOffset {
 		// Add the offset column
 		colBuilder := evbatch.NewIntColBuilder()
@@ -90,6 +92,21 @@ func (ts *StoreStreamOperator) HandleStreamBatch(batch *evbatch.Batch, execCtx S
 	keyPrefix := encoding.EncodeEntryPrefix(partitionHash, uint64(ts.slabID), 64)
 	storeBatchInTable(batch, []int{0}, ts.rowCols, keyPrefix, execCtx, ts.nodeID, false)
 	return batch, ts.sendBatchDownStream(batch, execCtx)
+}
+
+func getKeys(batch *evbatch.Batch) string {
+	if batch.Schema.ColumnTypes()[2] == types.ColumnTypeBytes {
+		var sb strings.Builder
+		sb.WriteString("{")
+		for i := 0; i < batch.RowCount; i++ {
+			key := batch.GetBytesColumn(2).Get(i)
+			sb.WriteString(string(key))
+			sb.WriteString(",")
+		}
+		sb.WriteString("}")
+		return sb.String()
+	}
+	return ""
 }
 
 func (ts *StoreStreamOperator) HandleBarrier(execCtx StreamExecContext) error {

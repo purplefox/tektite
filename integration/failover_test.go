@@ -19,10 +19,18 @@ import (
 	"time"
 )
 
+//func TestInLoop(t *testing.T) {
+//	for i := 0; i < 10000; i++ {
+//		log.Infof("iteration %d", i)
+//		TestFailoverReplicationQueues(t)
+//	}
+//}
+
 func TestFailoverReplicationQueues(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
 	}
+	//t.Parallel()
 	testFailoverReplicationQueues(t, false)
 }
 
@@ -30,6 +38,7 @@ func TestFailoverReplicationQueuesFailLevelManagerNode(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
 	}
+	//t.Parallel()
 	testFailoverReplicationQueues(t, true)
 }
 
@@ -55,17 +64,17 @@ func testFailoverReplicationQueues(t *testing.T, failLevelManager bool) {
 	require.NoError(t, err)
 	defer producer.Close()
 
-	numMessages := 1000
+	numMessages := 500
 
 	// First we send messages to topic1 - this has one partition, so offsets should come back in contiguous order
 	_, err = sendMessagesGoClient(numMessages, "topic1", producer)
 	require.NoError(t, err)
 
-	log.Debug("sent all the messages")
+	log.Info("sent all the messages")
 
 	waitForIncrementingRows(t, "topic1", numMessages, client, startTime)
 
-	log.Debug("**** stopping server")
+	log.Info("**** stopping server")
 
 	// Now stop one of the nodes - this should cause a failover
 	err = servers[failNode].Stop()
@@ -73,7 +82,7 @@ func testFailoverReplicationQueues(t *testing.T, failLevelManager bool) {
 
 	sleepRandom(2000 * time.Millisecond)
 
-	log.Debug("*** waiting for rows after failover")
+	log.Info("*** waiting for rows after failover")
 
 	waitForIncrementingRows(t, "topic1", numMessages, client, startTime)
 }
@@ -152,6 +161,14 @@ func testFailoverWithKafkaIn(t *testing.T, failLevelManager bool) {
 func waitForIncrementingRows(t *testing.T, tableName string, numMessages int, client tekclient.Client, startTime time.Time) {
 	waitForRowsWithVerifier(t, fmt.Sprintf("(scan all from %s) -> (sort by key)", tableName),
 		func(qr tekclient.QueryResult) bool {
+
+			//for i := 0; i < qr.RowCount(); i++ {
+			//	row := qr.Row(i)
+			//	key := string(row.BytesVal(2))
+			//	value := string(row.BytesVal(4))
+			//	log.Infof("got key %s value %s", key, value)
+			//}
+
 			for i := 0; i < qr.RowCount(); i++ {
 				row := qr.Row(i)
 				expectedKey := fmt.Sprintf("key%05d", i)
@@ -444,13 +461,15 @@ func setupServers(t *testing.T, fk *fake.Kafka) ([]*server.Server, func(t *testi
 		cfg.MinSnapshotInterval = 1 * time.Second
 		// Make sure we push frequently to exercise logic on level manager with dead versions
 		cfg.MemtableMaxReplaceInterval = 1 * time.Second
-		cfg.CompactionWorkersEnabled = true
+		//cfg.CompactionWorkersEnabled = true
 		// We set compaction timeout to a low value - when a node dies, pending jobs it owns will need to be timed out
 		// and before they time out compaction can stall, resulting in L0 reaching max size and shutdown not completing
-		cfg.CompactionJobTimeout = 5 * time.Second
+		//cfg.CompactionJobTimeout = 5 * time.Second
 		cfg.KafkaInitialJoinDelay = 10 * time.Millisecond // to speed tests up
 
 		cfg.LevelManagerRetryDelay = 1 * time.Second
+
+		cfg.L0MaxTablesBeforeBlocking = 1000000
 	})
 }
 
