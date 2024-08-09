@@ -147,7 +147,7 @@ func HandleRequestBuffer(buff []byte, handler RequestHandler, conn net.Conn) err
 		sbReqHandler.WriteString(fmt.Sprintf("    %sErrorResponse(errorCode int16, errorMsg string, req *%s) *%s\n", messageName,
 			messageName, responseName))
 	}
-	sbBufHandler.WriteString("    default: return errors.Errorf(\"Unknown ApiKey: %d\", apiKey)\n")
+	sbBufHandler.WriteString("    default: return errors.Errorf(\"Unsupported ApiKey: %d\", apiKey)\n")
 	sbBufHandler.WriteString("    }\n")
 	sbBufHandler.WriteString("    return err\n")
 	sbBufHandler.WriteString("}\n")

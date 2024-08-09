@@ -3,11 +3,11 @@
 package protocol
 
 import "encoding/binary"
+import "github.com/spirit-labs/tektite/common"
+import "github.com/pkg/errors"
 import "github.com/spirit-labs/tektite/debug"
 import "fmt"
 import "unsafe"
-import "github.com/spirit-labs/tektite/common"
-import "github.com/pkg/errors"
 
 type FetchRequestReplicaState struct {
     // The replica ID of the follower, or -1 if this request is from a consumer.
