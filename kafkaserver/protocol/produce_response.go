@@ -849,3 +849,4 @@ func (m *ProduceResponse) CalcSize(version int16, tagSizes []int) (int, []int) {
     return size, tagSizes
 }
 
+

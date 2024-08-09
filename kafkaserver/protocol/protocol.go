@@ -30,11 +30,12 @@ const (
 	ErrorCodeUnknownMemberID             = 25
 	ErrorCodeInvalidSessionTimeout       = 26
 	ErrorCodeRebalanceInProgress         = 27
+	ErrorCodeUnsupportedVersion          = 35
 	ErrorCodeUnsupportedForMessageFormat = 43
 	ErrorCodeGroupIDNotFound             = 69
 )
 
-var SupportedAPIKeys = []ApiVersionsResponseApiVersion{
+var SupportedAPIVersions = []ApiVersionsResponseApiVersion{
 	{ApiKey: APIKeyProduce, MinVersion: 3, MaxVersion: 3},
 	{ApiKey: APIKeyFetch, MinVersion: 4, MaxVersion: 4},
 	{ApiKey: APIKeyAPIVersions, MinVersion: 0, MaxVersion: 3},
