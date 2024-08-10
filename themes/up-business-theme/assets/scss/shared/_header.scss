@@ -1,0 +1,14 @@
+.navbar {
+  .navbar-brand {
+    img {
+      width: auto;
+      max-height: calc(3rem + .6vw);
+    }
+  }
+  @media (min-width: 1200px) {
+    .nav-item .nav-link {
+      font-size: 1.4rem;  // Larger font size for larger screens
+    }
+  }
+}
+
