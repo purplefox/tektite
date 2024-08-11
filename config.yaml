@@ -1,5 +1,5 @@
 baseURL: "https://www.example.com/"
-theme: "up-business-theme"
+theme: "tektite-theme"
 languageCode: "en-us"
 
 title: "tektite"

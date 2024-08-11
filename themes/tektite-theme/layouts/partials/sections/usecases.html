@@ -1,7 +1,17 @@
-<section class="section portfolio">
+<section class="section usecases">
   <div class="container">
-    {{ range .content }}
-    <div class="row portfolio-feature">
+    <div class="row justify-content-center pb-5">
+      <div class="col-12 col-xl-6">
+        {{ with .content.title }}
+        <h3 class="fs-1 fw-bold text-center text-primary pb-3">{{ . }}</h3>
+        {{ end }}
+        {{ with .content.text }}
+        <p class="text-black-61 text-center pb-3">{{ . }}</p>
+        {{ end }}
+      </div>
+    </div>
+    {{ range .content.usecases }}
+    <div class="row usecase">
       <div class="col-12 col-xl-6 d-flex flex-column justify-content-center">
         {{ with .image }}
           {{ partial "utilities/image-fluid.html" . }}

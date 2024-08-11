@@ -2,8 +2,8 @@ enabled: true
 id: "cta"
 
 content:
-  title: "Start your business now!"
+  title: "We Are Building Tektite Community!"
   image: "images/services-web-development.png"
   button:
-    label: "Let's talk"
+    label: "Join Us"
     url: "#"

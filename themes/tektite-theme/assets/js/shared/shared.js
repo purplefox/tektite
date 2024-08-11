@@ -5,8 +5,8 @@ import "./_footer";
 
 import "../sections/hero";
 import "../sections/brands";
-import "../sections/portfolio";
-import "../sections/services";
+import "../sections/usecases";
+import "../sections/capabilities";
 import "../sections/testimonials";
 import "../sections/cta";
 

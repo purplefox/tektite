@@ -1,0 +1,42 @@
+enabled: true
+id: "usecases"
+
+content:
+  title: "Use Cases"
+  text: "Tektite fulfills a variety of use cases, from real-time data processing to event streaming."
+  usecases:
+    - image: "images/portfolio-ecommerce.png"
+#      pretitle: "Portfolio Service"
+      title: "Kafka Event Streaming"
+      text: "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Quisque sed euismod quis sit gravida pharetra sit. Cursus vel enim pretium vulputate semper sem elit magna neque. Aliquet adipisc."
+
+      buttons:
+        - label: "See live"
+          url: "#"
+
+        - label: "Read more"
+          url: "#"
+
+    - image: "images/portfolio-ecommerce.png"
+#      pretitle: ""
+      title: "Event Processing"
+      text: "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Quisque sed euismod quis sit gravida pharetra sit. Cursus vel enim pretium vulputate semper sem elit magna neque. Aliquet adipisc."
+
+      buttons:
+        - label: "See live"
+          url: "#"
+
+        - label: "Read more"
+          url: "#"
+
+    - image: "images/portfolio-ecommerce.png"
+#      pretitle: "Materialized Views"
+      title: "Materialized Views"
+      text: "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Quisque sed euismod quis sit gravida pharetra sit. Cursus vel enim pretium vulputate semper sem elit magna neque. Aliquet adipisc."
+
+      buttons:
+        - label: "See live"
+          url: "#"
+
+        - label: "Read more"
+          url: "#"
