@@ -9,7 +9,6 @@ content:
 #      pretitle: "Portfolio Service"
       title: "Kafka Event Streaming"
       text: "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Quisque sed euismod quis sit gravida pharetra sit. Cursus vel enim pretium vulputate semper sem elit magna neque. Aliquet adipisc."
-
       buttons:
         - label: "See live"
           url: "#"
@@ -21,7 +20,6 @@ content:
 #      pretitle: ""
       title: "Event Processing"
       text: "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Quisque sed euismod quis sit gravida pharetra sit. Cursus vel enim pretium vulputate semper sem elit magna neque. Aliquet adipisc."
-
       buttons:
         - label: "See live"
           url: "#"
@@ -33,7 +31,6 @@ content:
 #      pretitle: "Materialized Views"
       title: "Materialized Views"
       text: "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Quisque sed euismod quis sit gravida pharetra sit. Cursus vel enim pretium vulputate semper sem elit magna neque. Aliquet adipisc."
-
       buttons:
         - label: "See live"
           url: "#"
