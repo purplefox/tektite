@@ -1,0 +1,16 @@
+{{with getJSON "https://api.github.com/repos/" .}}
+{{$starsvg := resources.GetMatch "images/star_icon.svg" | fingerprint}}
+    <div class="container">
+        <div class="row g-2 align-content-center">
+            <!--TODO: get the URL from a variable -->
+                <div class="col align-content-center">
+                    <a href="https://www.github.com/spirit-labs/tektite">
+                    <img src="{{$starsvg.RelPermalink}}">
+                    </a>
+                </div>
+            <div class="col align-content-center fs-5" >
+                {{.stargazers_count}}
+            </div>
+        </div>
+    </div>
+{{end}}
