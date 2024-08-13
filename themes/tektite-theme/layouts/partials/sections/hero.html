@@ -1,6 +1,6 @@
 <section class="section hero py-5">
   <div class="container">
-    <div class="row flex-column flex-xl-row-reverse">
+    <div class="row flex-column flex-xl-row">
       <div class="col-12 col-xl-6  d-flex flex-column justify-content-center hero-image">
         {{ partial "utilities/image-fluid" "images/logo.png" }}
       </div>
@@ -11,13 +11,21 @@
         {{ with .content.text }}
           <p class="text-center text-black-61 text-xl-start pb-4">{{ . | markdownify }}</p>
         {{ end }}
-        <div class="d-flex flex-column flex-xl-row">
+        <!--<div class="d-flex flex-column flex-xl-row">-->
+        <div class="d-inline-flex p-2  align-items-center bd-highlight">  s
           {{ with .content.buttonPrimary }}
-            <a class="btn btn-primary text-light px-4 my-1" href="{{ .url }}">{{ .label }}</a>
+            <!--<a class="btn btn-primary text-light px-4 my-1" href="{{ .url }}">{{ .label }}</a>-->
+            <div class="btn btn-outline-primary d-inline-flex p-2  align-items-center"> <div class="p-2 bd-highlight "> <a href="https://www.github.com/spirit-labs/tektite">
+              {{ partial "utilities/image-quarter.html" "images/github-mark.png" }}
+            </a></div>
+            <div class="p-2 bd-highlight">{{ partial "utilities/github.html" "spirit-labs/tektite" }}</div>
+            </div>
+           
           {{ end }}
           {{ with .content.buttonSecondary }}
-            <a class="btn btn-outline-primary px-4 my-1 ms-xl-4" href="{{ .url }}">{{ .label }}<span class="ms-2">{{ partial "icons/arrow-right.html" }}</span></a>
-          {{ end }}
+           <a class="btn btn-outline-primary px-4 my-1 ms-xl-4" href="{{ .url }}">{{ .label }}<span class="ms-2">{{ partial "icons/arrow-right.html" }}</span></a>
+           
+            {{ end }}
         </div>
       </div>
     </div>

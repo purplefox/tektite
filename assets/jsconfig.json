@@ -3,7 +3,7 @@
   "baseUrl": ".",
   "paths": {
    "*": [
-    "../themes/tektite-theme/assets/*"
+    "..\\themes\\tektite-theme\\assets\\*"
    ]
   }
  }

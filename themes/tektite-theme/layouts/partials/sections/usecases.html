@@ -1,7 +1,7 @@
 <section class="section usecases py-5">
   <div class="container">
-    <div class="row justify-content-center pb-5">
-      <div class="col-12 col-xl-6">
+    <div class="row justify-content-center pb-5 ">
+      <div class="col-12 col-xl-6 ">
         {{ with .content.title }}
         <h3 class="fs-1 fw-bold text-center text-primary pb-3">{{ . }}</h3>
         {{ end }}
@@ -13,7 +13,7 @@
     <div class="row justify-content-md-center g-5">
       {{ range .content.usecases }}
         <div class="col-12 col-xl-4">
-          <div class="card bg-blue-16 border-0 border-radius-34 p-4">
+          <div class="card .bg-transparent-16 border-0 border-radius-34 p-4">
             {{ with .image }}{{ partial "utilities/image-fluid.html" . }}{{ end }}
             <div class="card-body text-center">
               {{ with .title }}<h4 class="card-title text-center text-primary pb-4">{{ . }}</h4>{{ end }}
