@@ -52,7 +52,7 @@ menus:
       weight: 3
 
   buttons:
-    - name: "Join Our Waitlist;"
+    - name: "Join Our Waitlist"
       url: "/#"
       weight: 5
       pre: "btn btn-primary text-light"
