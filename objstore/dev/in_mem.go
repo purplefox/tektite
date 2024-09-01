@@ -2,6 +2,7 @@ package dev
 
 import (
 	"bytes"
+	"context"
 	"github.com/spirit-labs/tektite/common"
 	log "github.com/spirit-labs/tektite/logger"
 	"github.com/spirit-labs/tektite/objstore"
@@ -28,45 +29,10 @@ type InMemStore struct {
 
 type valueHolder struct {
 	value []byte
-	info objstore.ObjectInfo
+	info  objstore.ObjectInfo
 }
 
-func (im *InMemStore) PutIfNotExists(key []byte, value []byte) (bool, error) {
-	if err := im.checkUnavailable(); err != nil {
-		return false, err
-	}
-	im.maybeAddDelay()
-	im.condLock.Lock()
-	defer im.condLock.Unlock()
-	skey := common.ByteSliceToStringZeroCopy(key)
-	_, exists := im.store.Load(skey)
-	if exists {
-		return false, nil
-	}
-	im.store.Store(skey, valueHolder{value: value, info: objstore.ObjectInfo{Key: key, LastModified: time.Now()}})
-	return true, nil
-}
-
-func (im *InMemStore) ListObjectsWithPrefix(prefix []byte) ([]objstore.ObjectInfo, error) {
-	sPref := string(prefix)
-	var infos []objstore.ObjectInfo
-	im.store.Range(func(k, v interface{}) bool {
-		key := k.(string)
-		if len(prefix) == 0 || strings.HasPrefix(key, sPref) {
-			infos = append(infos, objstore.ObjectInfo{
-				Key: []byte(key),
-				LastModified: v.(valueHolder).info.LastModified,
-			})
-		}
-		return true
-	})
-	sort.SliceStable(infos, func(i, j int) bool {
-		return bytes.Compare(infos[i].Key, infos[j].Key) < 0
-	})
-	return infos, nil
-}
-
-func (im *InMemStore) Get(key []byte) ([]byte, error) {
+func (im *InMemStore) Get(_ context.Context, key []byte) ([]byte, error) {
 	if err := im.checkUnavailable(); err != nil {
 		return nil, err
 	}
@@ -83,7 +49,7 @@ func (im *InMemStore) Get(key []byte) ([]byte, error) {
 	return holder.value, nil //nolint:forcetypeassert
 }
 
-func (im *InMemStore) Put(key []byte, value []byte) error {
+func (im *InMemStore) Put(_ context.Context, key []byte, value []byte) error {
 	if err := im.checkUnavailable(); err != nil {
 		return err
 	}
@@ -94,7 +60,42 @@ func (im *InMemStore) Put(key []byte, value []byte) error {
 	return nil
 }
 
-func (im *InMemStore) Delete(key []byte) error {
+func (im *InMemStore) PutIfNotExists(_ context.Context, key []byte, value []byte) (bool, error) {
+	if err := im.checkUnavailable(); err != nil {
+		return false, err
+	}
+	im.maybeAddDelay()
+	im.condLock.Lock()
+	defer im.condLock.Unlock()
+	skey := common.ByteSliceToStringZeroCopy(key)
+	_, exists := im.store.Load(skey)
+	if exists {
+		return false, nil
+	}
+	im.store.Store(skey, valueHolder{value: value, info: objstore.ObjectInfo{Key: key, LastModified: time.Now()}})
+	return true, nil
+}
+
+func (im *InMemStore) ListObjectsWithPrefix(_ context.Context, prefix []byte) ([]objstore.ObjectInfo, error) {
+	sPref := string(prefix)
+	var infos []objstore.ObjectInfo
+	im.store.Range(func(k, v interface{}) bool {
+		key := k.(string)
+		if len(prefix) == 0 || strings.HasPrefix(key, sPref) {
+			infos = append(infos, objstore.ObjectInfo{
+				Key:          []byte(key),
+				LastModified: v.(valueHolder).info.LastModified,
+			})
+		}
+		return true
+	})
+	sort.SliceStable(infos, func(i, j int) bool {
+		return bytes.Compare(infos[i].Key, infos[j].Key) < 0
+	})
+	return infos, nil
+}
+
+func (im *InMemStore) Delete(_ context.Context, key []byte) error {
 	if err := im.checkUnavailable(); err != nil {
 		return err
 	}
@@ -105,7 +106,7 @@ func (im *InMemStore) Delete(key []byte) error {
 	return nil
 }
 
-func (im *InMemStore) DeleteAll(keys [][]byte) error {
+func (im *InMemStore) DeleteAll(_ context.Context, keys [][]byte) error {
 	if err := im.checkUnavailable(); err != nil {
 		return err
 	}

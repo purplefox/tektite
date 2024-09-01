@@ -1,6 +1,7 @@
 package dev
 
 import (
+	"context"
 	"github.com/spirit-labs/tektite/asl/conf"
 	"github.com/spirit-labs/tektite/asl/remoting"
 	"github.com/spirit-labs/tektite/objstore"
@@ -40,7 +41,7 @@ type getMessageHandler struct {
 
 func (g *getMessageHandler) HandleMessage(messageHolder remoting.MessageHolder) (remoting.ClusterMessage, error) {
 	gm := messageHolder.Message.(*clustermsgs.LocalObjStoreGetRequest)
-	value, err := g.store.Get(gm.Key)
+	value, err := g.store.Get(context.Background(), gm.Key)
 	if err != nil {
 		return nil, err
 	}
@@ -55,10 +56,11 @@ func (a *addMessageHandler) HandleMessage(messageHolder remoting.MessageHolder) 
 	gm := messageHolder.Message.(*clustermsgs.LocalObjStorePutRequest)
 	var err error
 	ok := true
+	ctx := context.Background()
 	if gm.IfNotExists {
-		ok, err = a.store.PutIfNotExists(gm.Key, gm.Value)
+		ok, err = a.store.PutIfNotExists(ctx, gm.Key, gm.Value)
 	} else {
-		err = a.store.Put(gm.Key, gm.Value)
+		err = a.store.Put(ctx, gm.Key, gm.Value)
 	}
 	if err != nil {
 		return nil, err
@@ -72,7 +74,7 @@ type deleteMessageHandler struct {
 
 func (d *deleteMessageHandler) HandleMessage(messageHolder remoting.MessageHolder) (remoting.ClusterMessage, error) {
 	gm := messageHolder.Message.(*clustermsgs.LocalObjStoreDeleteRequest)
-	err := d.store.Delete(gm.Key)
+	err := d.store.Delete(context.Background(), gm.Key)
 	return nil, err
 }
 
@@ -82,7 +84,7 @@ type deleteAllMessageHandler struct {
 
 func (d *deleteAllMessageHandler) HandleMessage(messageHolder remoting.MessageHolder) (remoting.ClusterMessage, error) {
 	dam := messageHolder.Message.(*clustermsgs.LocalObjStoreDeleteAllRequest)
-	err := d.store.DeleteAll(dam.Keys)
+	err := d.store.DeleteAll(context.Background(), dam.Keys)
 	return nil, err
 }
 
@@ -92,7 +94,7 @@ type listObjectsHandler struct {
 
 func (d *listObjectsHandler) HandleMessage(messageHolder remoting.MessageHolder) (remoting.ClusterMessage, error) {
 	gm := messageHolder.Message.(*clustermsgs.LocalObjStoreListObjectsRequest)
-	infos, err := d.store.ListObjectsWithPrefix(gm.Prefix)
+	infos, err := d.store.ListObjectsWithPrefix(context.Background(), gm.Prefix)
 	if err != nil {
 		return nil, err
 	}
@@ -122,7 +124,7 @@ type Client struct {
 
 var _ objstore.Client = &Client{}
 
-func (c *Client) Get(key []byte) ([]byte, error) {
+func (c *Client) Get(_ context.Context, key []byte) ([]byte, error) {
 	req := &clustermsgs.LocalObjStoreGetRequest{Key: key}
 	resp, err := c.rClient.SendRPC(req, c.address)
 	if err != nil {
@@ -132,7 +134,7 @@ func (c *Client) Get(key []byte) ([]byte, error) {
 	return vResp.Value, nil
 }
 
-func (c *Client) Put(key []byte, value []byte) error {
+func (c *Client) Put(_ context.Context, key []byte, value []byte) error {
 	req := &clustermsgs.LocalObjStorePutRequest{Key: key, Value: value}
 	_, err := c.rClient.SendRPC(req, c.address)
 	if err != nil {
@@ -141,7 +143,7 @@ func (c *Client) Put(key []byte, value []byte) error {
 	return nil
 }
 
-func (c *Client) PutIfNotExists(key []byte, value []byte) (bool, error) {
+func (c *Client) PutIfNotExists(_ context.Context, key []byte, value []byte) (bool, error) {
 	req := &clustermsgs.LocalObjStorePutRequest{Key: key, Value: value, IfNotExists: true}
 	resp, err := c.rClient.SendRPC(req, c.address)
 	if err != nil {
@@ -151,7 +153,7 @@ func (c *Client) PutIfNotExists(key []byte, value []byte) (bool, error) {
 	return vResp.Ok, nil
 }
 
-func (c *Client) Delete(key []byte) error {
+func (c *Client) Delete(_ context.Context, key []byte) error {
 	req := &clustermsgs.LocalObjStoreDeleteRequest{Key: key}
 	_, err := c.rClient.SendRPC(req, c.address)
 	if err != nil {
@@ -160,7 +162,7 @@ func (c *Client) Delete(key []byte) error {
 	return nil
 }
 
-func (c *Client) DeleteAll(keys [][]byte) error {
+func (c *Client) DeleteAll(_ context.Context, keys [][]byte) error {
 	req := &clustermsgs.LocalObjStoreDeleteAllRequest{Keys: keys}
 	_, err := c.rClient.SendRPC(req, c.address)
 	if err != nil {
@@ -169,7 +171,7 @@ func (c *Client) DeleteAll(keys [][]byte) error {
 	return nil
 }
 
-func (c *Client) ListObjectsWithPrefix(prefix []byte) ([]objstore.ObjectInfo, error) {
+func (c *Client) ListObjectsWithPrefix(_ context.Context, prefix []byte) ([]objstore.ObjectInfo, error) {
 	req := &clustermsgs.LocalObjStoreListObjectsRequest{Prefix: prefix}
 	resp, err := c.rClient.SendRPC(req, c.address)
 	if err != nil {

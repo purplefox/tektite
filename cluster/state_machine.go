@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"github.com/pkg/errors"
@@ -37,11 +38,15 @@ Every time an update is made a new entry is created. Old entries need to be garb
 no longer needed. Determining whether an entry is needed is tricky. If a member has internal state with sequence number S
 then we cannot delete keys with sequence > S, or state machine state will be lost. Also if a new member joins and
 calls list objects to initialise it's sequence, then we cannot delete any sequence greater than the largest key listed.
-So, it's very hard to determine exactly which keys we can delete.
-Instead, we use a heuristic. If members always update every `updateInterval` duration, then we wouldn't expect to see
-used keys much older than that duration. When we garbage collect keys we first list keys, and we delete all apart from
-the keys within a `retainedInterval` duration of the most recent keys. This is set to ten times `updateInterval`.
-By making sure that `retainedInterval` is much greater than `updateInterval` then we can be confident we won't delete in use keys.
+We set an upper bound on the maximum time on how long we will retain the value of nextSequence in the state machine. If
+we keep it too long, then it would be possible that the next key, which might already have been written gets deleted by
+garbage collection. This would result in the next update succeeding but the consistency of the state machine would be
+broken as in-use state would have been lost.
+If we take too long since the current nextSequence was loaded we will timeout, and force a reload of latest key via `init()`.
+Consequently we can ensure that no member relies on old sequence values, even in the presence of non availability of the
+object store for an extended time.
+Since we have a upper bound on how long keys are needed we make sure garbage collection never deletes keys more recent
+than this time. In practice, we make the retention time much larger than the upper bound, to be on the safe side.
 */
 type StateMachine[T any] struct {
 	lock                     sync.Mutex
@@ -49,12 +54,14 @@ type StateMachine[T any] struct {
 	keyPrefix                string
 	objStoreClient           objstore.Client
 	nextSequence             int
+	sequenceDeadline         int64
 	state                    T
 	gcTimer                  *time.Timer
 	gcInterval               time.Duration
 	updateInterval           time.Duration
 	retainedDuration         time.Duration
 	unavailableRetryInterval time.Duration
+	maxSequenceAge           time.Duration
 	lastUpdateTime           int64
 	updateTimer              *time.Timer
 	started                  bool
@@ -62,11 +69,13 @@ type StateMachine[T any] struct {
 }
 
 const RetainedDurationFactor = 10
+const MaxSequenceAgeFactor = 2
 
 func NewStateMachine[T any](keyPrefix string, address string, objStoreClient objstore.Client, gcInterval time.Duration,
 	updateInterval time.Duration) *StateMachine[T] {
 	unavailableRetryInterval := updateInterval / 4
 	retainedDuration := RetainedDurationFactor * updateInterval
+	maxSequenceAge := MaxSequenceAgeFactor * updateInterval
 	sm := &StateMachine[T]{
 		address:                  address,
 		keyPrefix:                keyPrefix,
@@ -76,6 +85,7 @@ func NewStateMachine[T any](keyPrefix string, address string, objStoreClient obj
 		retainedDuration:         retainedDuration,
 		updateInterval:           updateInterval,
 		unavailableRetryInterval: unavailableRetryInterval,
+		maxSequenceAge:           maxSequenceAge,
 		lastUpdateTime:           -1,
 	}
 	return sm
@@ -141,47 +151,57 @@ func (s *StateMachine[T]) scheduleUpdate() {
 }
 
 func (s *StateMachine[T]) garbageCollectKeys() error {
-	existingInfos, err := s.objStoreClient.ListObjectsWithPrefix([]byte(s.keyPrefix))
+	existingInfos, err := s.listObjectsWithTimeout()
 	if err != nil {
 		return err
 	}
 	if len(existingInfos) == 0 {
 		return nil
 	}
-	// Get last moodified of newest key - we never delete the last retainedDuration of keys
+	// Get last modified of newest key - we never delete the last retainedDuration of keys
 	newest := existingInfos[len(existingInfos)-1].LastModified.UTC()
 	deleteBefore := newest.Add(-s.retainedDuration)
-
 	var toDelete [][]byte
 	for _, info := range existingInfos {
 		if info.LastModified.UTC().Before(deleteBefore) {
 			toDelete = append(toDelete, info.Key)
-
-			//seq, err := s.extractSequenceFromKey(info.Key)
-			//if err != nil {
-			//	return err
-			//}
-			//updateHighestDeletedSeq(seq)
 		}
 	}
 	if len(toDelete) > 0 {
-		if err := s.objStoreClient.DeleteAll(toDelete); err != nil {
+		if err := s.deleteObjectsWithTimeout(toDelete); err != nil {
 			log.Errorf("Error deleting keys %v", err)
 		}
 	}
 	return nil
 }
 
+func (s *StateMachine[T]) listObjectsWithTimeout() ([]objstore.ObjectInfo, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return s.objStoreClient.ListObjectsWithPrefix(ctx, []byte(s.keyPrefix))
+}
+
+func (s *StateMachine[T]) deleteObjectsWithTimeout(toDelete [][]byte) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return s.objStoreClient.DeleteAll(ctx, toDelete)
+}
+
+func (s *StateMachine[T]) updateSequenceDeadline() {
+	s.sequenceDeadline = int64(arista.NanoTime()) + s.maxSequenceAge.Nanoseconds()
+}
+
 func (s *StateMachine[T]) init() error {
 	for {
+		s.updateSequenceDeadline()
 		// Initialise next sequence to be 1 + largest stored sequence
-		existingInfos, ok, err := s.listKeysWithRetry()
+		existingInfos, err := s.listKeysWithRetry()
 		if err != nil {
+			if errors.As(err, context.DeadlineExceeded) {
+				// Took too long, retry
+				continue
+			}
 			return err
-		}
-		if !ok {
-			// object store unavailable - retry
-			continue
 		}
 		if len(existingInfos) > 0 {
 			lastInfo := existingInfos[len(existingInfos)-1]
@@ -190,17 +210,17 @@ func (s *StateMachine[T]) init() error {
 				return err
 			}
 			s.nextSequence = lastSeq + 1
-			//updateLowestLoadedSeq(s.nextSequence)
 
-			buff, ok, err := s.getWithRetry(lastInfo.Key)
+			buff, err := s.getWithRetry(lastInfo.Key)
 			if err != nil {
+				if errors.As(err, context.DeadlineExceeded) {
+					// Took too long, retry
+					continue
+				}
 				return err
 			}
-			if !ok {
-				// object store unavailable - retry
-				continue
-			}
 			if buff == nil {
+				// Was deleted - continue
 				continue
 			}
 			var state T
@@ -222,7 +242,6 @@ func (s *StateMachine[T]) extractSequenceFromKey(key []byte) (int, error) {
 // Update updates the state based on the previous state. The update function provides the operation to update the state
 // based on the previous state, returning the new state which will be stored. The function returns when the new state
 // has been committed to object storage, or an error occurs.
-
 func (s *StateMachine[T]) Update(updateFunc func(state T) (T, error)) (T, error) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
@@ -233,12 +252,13 @@ func (s *StateMachine[T]) Update(updateFunc func(state T) (T, error)) (T, error)
 
 func (s *StateMachine[T]) doUpdate(updateFunc func(state T) (T, error)) (T, error) {
 	for {
-		var zeroT T
-		r, ok, err := s.update(updateFunc)
-		if err != nil {
-			return zeroT, err
+		r, err := s.update(updateFunc)
+		if err == nil {
+			return r, nil
 		}
-		if !ok {
+		var zeroT T
+		if errors.As(err, context.DeadlineExceeded) {
+			// We took too long to do the update, we need to re-load sequence
 			log.Infof("failed to update as object store unavailable - will reload")
 			// the update failed as objects store was unavailable for > updateTime
 			// To avoid possibility that an in use key was deleted, we must reload from latest key and update again
@@ -247,38 +267,15 @@ func (s *StateMachine[T]) doUpdate(updateFunc func(state T) (T, error)) (T, erro
 			}
 			continue
 		}
-		return r, nil
+		return zeroT, err
 	}
 }
 
-//var highestDelLock sync.Mutex
-//var highestDeletedSeq int
-//var lowestLoadedSeq int = math.MaxInt
-
-//func updateHighestDeletedSeq(seq int) {
-//	highestDelLock.Lock()
-//	defer highestDelLock.Unlock()
-//	if seq > highestDeletedSeq {
-//		highestDeletedSeq = seq
-//	}
-//	if seq >= lowestLoadedSeq {
-//		panic(fmt.Sprintf("deleting in use key seq: %d lowestLoaded: %d", seq, lowestLoadedSeq))
-//	}
-//}
-//
-//func updateLowestLoadedSeq(seq int) {
-//	highestDelLock.Lock()
-//	defer highestDelLock.Unlock()
-//	if seq < lowestLoadedSeq {
-//		lowestLoadedSeq = seq
-//	}
-//}
-
-func (s *StateMachine[T]) update(updateFunc func(state T) (T, error)) (T, bool, error) {
+func (s *StateMachine[T]) update(updateFunc func(state T) (T, error)) (T, error) {
 	var tZero T
 	if s.nextSequence == -1 {
 		if err := s.init(); err != nil {
-			return tZero, false, err
+			return tZero, err
 		}
 	}
 	seq := s.nextSequence
@@ -287,107 +284,100 @@ func (s *StateMachine[T]) update(updateFunc func(state T) (T, error)) (T, bool, 
 		var err error
 		state, err = updateFunc(state)
 		if err != nil {
-			return tZero, false, err
+			return tZero, err
 		}
 		buff, err := json.Marshal(&state)
 		if err != nil {
-			return tZero, false, err
+			return tZero, err
 		}
 		newKey := s.createKey(seq)
-		put, ok, err := s.putIfNotExistsWithRetry([]byte(newKey), buff)
+		put, err := s.putIfNotExistsWithRetry([]byte(newKey), buff)
 		if err != nil {
-			return tZero, false, err
-		}
-		if !ok {
-			return tZero, false, nil
+			return tZero, err
 		}
 		if put {
 			s.nextSequence = seq + 1
-			//updateLowestLoadedSeq(s.nextSequence)
 			s.state = state
-			return s.state, true, nil
+			s.updateSequenceDeadline()
+			return s.state, nil
 		}
 		// key exists already - load the state
-		buffRead, ok, err := s.getWithRetry([]byte(newKey))
+		buffRead, err := s.getWithRetry([]byte(newKey))
 		if err != nil {
-			return tZero, false, err
-		}
-		if !ok {
-			return tZero, false, nil
+			return tZero, err
 		}
 		if buffRead == nil {
-			return tZero, false, errors.Errorf("cannot find key %v", newKey)
+			return tZero, errors.Errorf("cannot find key %v", newKey)
 		}
 		var newState T
 		if err := json.Unmarshal(buffRead, &newState); err != nil {
-			return tZero, false, err
+			return tZero, err
 		}
 		state = newState
 		seq++
 	}
 }
 
-func (s *StateMachine[T]) getWithRetry(key []byte) ([]byte, bool, error) {
-	v, ok, err := s.executeWithRetry(func() (any, error) {
-		return s.objStoreClient.Get(key)
+func (s *StateMachine[T]) getWithRetry(key []byte) ([]byte, error) {
+	v, err := s.executeWithRetry(func(ctx context.Context) (any, error) {
+		return s.objStoreClient.Get(ctx, key)
 	})
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
-	if !ok {
-		return nil, false, nil
-	}
-	return v.([]byte), true, err
+	return v.([]byte), err
 }
 
-func (s *StateMachine[T]) putIfNotExistsWithRetry(key []byte, value []byte) (bool, bool, error) {
-	v, ok, err := s.executeWithRetry(func() (any, error) {
-		return s.objStoreClient.PutIfNotExists(key, value)
+func (s *StateMachine[T]) putIfNotExistsWithRetry(key []byte, value []byte) (bool, error) {
+	v, err := s.executeWithRetry(func(ctx context.Context) (any, error) {
+		return s.objStoreClient.PutIfNotExists(ctx, key, value)
 	})
 	if err != nil {
-		return false, false, err
+		return false, err
 	}
-	if !ok {
-		return false, false, nil
-	}
-	return v.(bool), true, err
+	return v.(bool), err
 }
 
-func (s *StateMachine[T]) listKeysWithRetry() ([]objstore.ObjectInfo, bool, error) {
-	v, ok, err := s.executeWithRetry(func() (any, error) {
-		return s.objStoreClient.ListObjectsWithPrefix([]byte(s.keyPrefix))
+func (s *StateMachine[T]) listKeysWithRetry() ([]objstore.ObjectInfo, error) {
+	v, err := s.executeWithRetry(func(ctx context.Context) (any, error) {
+		return s.objStoreClient.ListObjectsWithPrefix(ctx, []byte(s.keyPrefix))
 	})
 	if err != nil {
-		return nil, false, err
-	}
-	if !ok {
-		return nil, false, nil
+		return nil, err
 	}
 	if v == nil {
-		return nil, true, nil
+		return nil, nil
 	}
-	return v.([]objstore.ObjectInfo), true, err
+	return v.([]objstore.ObjectInfo), err
 }
 
-func (s *StateMachine[T]) executeWithRetry(action func() (any, error)) (any, bool, error) {
-	start := arista.NanoTime()
+func execActionWithCancel(action func(ctx context.Context) (any, error), timeout time.Duration) (any, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return action(ctx)
+}
+
+func (s *StateMachine[T]) executeWithRetry(action func(ctx context.Context) (any, error)) (any, error) {
 	for {
 		if s.stopping.Load() {
-			return nil, false, errors.New("state machine is stopping")
+			return nil, errors.New("state machine is stopping")
 		}
-		r, err := action()
+		remaining := s.sequenceDeadline - int64(arista.NanoTime())
+		if remaining <= 0 {
+			return nil, context.DeadlineExceeded
+		}
+		r, err := execActionWithCancel(action, time.Duration(remaining))
 		if err == nil {
-			return r, true, nil
+			return r, nil
 		}
 		if !common.IsUnavailableError(err) {
-			return nil, false, err
+			return nil, err
 		}
-		if arista.NanoTime()-start >= uint64(s.updateInterval) {
-			// We don't retry more than update interval
-			return nil, false, nil
+		remaining = s.sequenceDeadline - int64(arista.NanoTime())
+		if remaining <= s.unavailableRetryInterval.Nanoseconds() {
+			return nil, context.DeadlineExceeded
 		}
 		// retry
-		//log.Warn("object store is unavailable, will retry after delay")
 		time.Sleep(s.unavailableRetryInterval)
 	}
 }

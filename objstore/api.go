@@ -1,19 +1,22 @@
 package objstore
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 type Client interface {
-	Get(key []byte) ([]byte, error)
-	Put(key []byte, value []byte) error
-	PutIfNotExists(key []byte, value []byte) (bool, error)
-	Delete(key []byte) error
-	DeleteAll(keys [][]byte) error
-	ListObjectsWithPrefix(prefix []byte) ([]ObjectInfo, error)
+	Get(ctx context.Context, key []byte) ([]byte, error)
+	Put(ctx context.Context, key []byte, value []byte) error
+	PutIfNotExists(ctx context.Context, key []byte, value []byte) (bool, error)
+	Delete(ctx context.Context, key []byte) error
+	DeleteAll(ctx context.Context, keys [][]byte) error
+	ListObjectsWithPrefix(ctx context.Context, prefix []byte) ([]ObjectInfo, error)
 	Start() error
 	Stop() error
 }
 
 type ObjectInfo struct {
-	Key []byte
+	Key          []byte
 	LastModified time.Time
 }

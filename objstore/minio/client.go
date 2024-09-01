@@ -25,11 +25,11 @@ type Client struct {
 	client *minio.Client
 }
 
-func (m *Client) ListObjectsWithPrefix(prefix []byte) ([]objstore.ObjectInfo, error) {
+func (m *Client) ListObjectsWithPrefix(ctx context.Context, prefix []byte) ([]objstore.ObjectInfo, error) {
 	var opts minio.ListObjectsOptions
 	opts.Prefix = string(prefix)
 	log.Infof("calling ListObjects with prefix '%s'", opts.Prefix)
-	ch := m.client.ListObjects(context.Background(), m.cfg.MinioBucketName, opts)
+	ch := m.client.ListObjects(ctx, m.cfg.MinioBucketName, opts)
 	var infos []objstore.ObjectInfo
 	for info := range ch {
 		if info.Err != nil {
@@ -44,9 +44,9 @@ func (m *Client) ListObjectsWithPrefix(prefix []byte) ([]objstore.ObjectInfo, er
 	return infos, nil
 }
 
-func (m *Client) Get(key []byte) ([]byte, error) {
+func (m *Client) Get(ctx context.Context, key []byte) ([]byte, error) {
 	objName := string(key)
-	obj, err := m.client.GetObject(context.Background(), m.cfg.MinioBucketName, objName, minio.GetObjectOptions{})
+	obj, err := m.client.GetObject(ctx, m.cfg.MinioBucketName, objName, minio.GetObjectOptions{})
 	if err != nil {
 		return nil, maybeConvertError(err)
 	}
@@ -66,20 +66,20 @@ func (m *Client) Get(key []byte) ([]byte, error) {
 	return buff, nil
 }
 
-func (m *Client) Put(key []byte, value []byte) error {
+func (m *Client) Put(ctx context.Context, key []byte, value []byte) error {
 	buff := bytes.NewBuffer(value)
 	objName := string(key)
-	_, err := m.client.PutObject(context.Background(), m.cfg.MinioBucketName, objName, buff, int64(len(value)),
+	_, err := m.client.PutObject(ctx, m.cfg.MinioBucketName, objName, buff, int64(len(value)),
 		minio.PutObjectOptions{})
 	return maybeConvertError(err)
 }
 
-func (m *Client) PutIfNotExists(key []byte, value []byte) (bool, error) {
+func (m *Client) PutIfNotExists(ctx context.Context, key []byte, value []byte) (bool, error) {
 	buff := bytes.NewBuffer(value)
 	objName := string(key)
 	opts := minio.PutObjectOptions{}
 	opts.SetMatchETagExcept("*")
-	_, err := m.client.PutObject(context.Background(), m.cfg.MinioBucketName, objName, buff, int64(len(value)), opts)
+	_, err := m.client.PutObject(ctx, m.cfg.MinioBucketName, objName, buff, int64(len(value)), opts)
 	if err != nil {
 		var errResponse minio.ErrorResponse
 		if errors.As(err, &errResponse) {
@@ -93,19 +93,19 @@ func (m *Client) PutIfNotExists(key []byte, value []byte) (bool, error) {
 	return true, nil
 }
 
-func (m *Client) Delete(key []byte) error {
+func (m *Client) Delete(ctx context.Context, key []byte) error {
 	objName := string(key)
-	return maybeConvertError(m.client.RemoveObject(context.Background(), m.cfg.MinioBucketName, objName, minio.RemoveObjectOptions{}))
+	return maybeConvertError(m.client.RemoveObject(ctx, m.cfg.MinioBucketName, objName, minio.RemoveObjectOptions{}))
 }
 
-func (m *Client) DeleteAll(keys [][]byte) error {
+func (m *Client) DeleteAll(ctx context.Context, keys [][]byte) error {
 	if len(keys) == 0 {
 		return nil
 	}
 	opts := minio.RemoveObjectsOptions{}
 	// must be a blocking channel
 	ch := make(chan minio.ObjectInfo)
-	errCh := m.client.RemoveObjects(context.Background(), m.cfg.MinioBucketName, ch, opts)
+	errCh := m.client.RemoveObjects(ctx, m.cfg.MinioBucketName, ch, opts)
 	// Minio client has a weird API here forcing us to spawn GRs, and add messages to channel after calling RemoveObjects
 	// to avoid losing any messages
 	go func() {
