@@ -182,8 +182,8 @@ func (w *scriptTestSuite) createServerConfs() []conf.Config {
 	if w.objectStoreType == conf.MinioObjectStoreType {
 		cfg.ObjectStoreType = conf.MinioObjectStoreType
 		cfg.MinioEndpoint = "127.0.0.1:9000"
-		cfg.MinioAccessKey = "tYTKoueu7NyentYPe3OF"
-		cfg.MinioSecretKey = "DxMe9mGt5OEeUNvqv3euXMcOx7mmLui6g9q4CMjB"
+		cfg.MinioUsername = "tYTKoueu7NyentYPe3OF"
+		cfg.MinioPassword = "DxMe9mGt5OEeUNvqv3euXMcOx7mmLui6g9q4CMjB"
 		cfg.MinioBucketName = "tektite-dev"
 	} else if w.objectStoreType == conf.DevObjectStoreType {
 		cfg.DevObjectStoreAddresses = []string{w.devObjStoreAddress}

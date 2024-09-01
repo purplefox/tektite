@@ -138,13 +138,35 @@ message LocalObjStoreGetResponse {
   bytes value = 1;
 }
 
-message LocalObjStoreAddRequest {
+message LocalObjStorePutRequest {
   bytes key = 1;
   bytes value = 2;
+  bool if_not_exists = 3;
+}
+
+message LocalObjStorePutResponse {
+  bool ok = 1;
 }
 
 message LocalObjStoreDeleteRequest {
   bytes key = 1;
+}
+
+message LocalObjStoreDeleteAllRequest {
+  repeated bytes keys = 1;
+}
+
+message LocalObjStoreListObjectsRequest {
+  bytes prefix = 1;
+}
+
+message LocalObjStoreListObjectsResponse {
+  repeated LocalObjStoreInfoMessage infos = 1;
+}
+
+message LocalObjStoreInfoMessage {
+  bytes key = 1;
+  int64 last_modified = 2;
 }
 
 // Query manager messages

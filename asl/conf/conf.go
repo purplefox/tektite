@@ -155,9 +155,9 @@ type Config struct {
 	ObjectStoreType         string
 	DevObjectStoreAddresses []string
 
-	MinioEndpoint   string
-	MinioAccessKey  string
-	MinioSecretKey  string
+	MinioEndpoint  string
+	MinioUsername   string
+	MinioPassword   string
 	MinioBucketName string
 	MinioSecure     bool
 
