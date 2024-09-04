@@ -103,7 +103,6 @@ func (m *Membership) updateState(memberShipState MembershipState) (MembershipSta
 		newMembers = append(newMembers, member)
 	}
 	if !found {
-		// Add the new member on the end
 		newMembers = append(newMembers, MembershipEntry{
 			Address:    m.address,
 			UpdateTime: now,

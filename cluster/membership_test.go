@@ -13,6 +13,7 @@ import (
 
 func TestJoinSequential(t *testing.T) {
 	t.Parallel()
+
 	objStore := dev.NewInMemStore(0)
 	var memberships []*Membership
 	defer func() {
@@ -26,6 +27,7 @@ func TestJoinSequential(t *testing.T) {
 		address := fmt.Sprintf("address-%d", i)
 		memberIndex := i
 		membership := NewMembership("bucket1", "prefix1", address, objStore, 100*time.Millisecond, 5*time.Second, func() {
+
 			if memberIndex != 0 {
 				panic("becomeLeader callback called for wrong member")
 			}
@@ -84,6 +86,7 @@ func TestJoinParallel(t *testing.T) {
 func TestNonLeadersEvicted(t *testing.T) {
 	t.Parallel()
 	objStore := dev.NewInMemStore(0)
+
 	var memberships []*Membership
 	defer func() {
 		for _, membership := range memberships {
@@ -94,6 +97,7 @@ func TestNonLeadersEvicted(t *testing.T) {
 	for i := 0; i < numMembers; i++ {
 		address := fmt.Sprintf("address-%d", i)
 		memberShip := NewMembership("bucket1", "prefix1", address, objStore, 100*time.Millisecond, 1*time.Second, func() {
+
 		})
 		memberShip.Start()
 		memberships = append(memberships, memberShip)
@@ -103,6 +107,7 @@ func TestNonLeadersEvicted(t *testing.T) {
 	for i := 0; i < numMembers-1; i++ {
 		// choose a member at random - but not the leader
 		index := 1 + rand.Intn(len(memberships)-1)
+
 		// stop it
 		memberships[index].Stop()
 		memberships = append(memberships[:index], memberships[index+1:]...)
@@ -123,6 +128,7 @@ func TestNonLeadersEvicted(t *testing.T) {
 func TestLeaderEvicted(t *testing.T) {
 	t.Parallel()
 	objStore := dev.NewInMemStore(0)
+
 	var memberships []*Membership
 	defer func() {
 		for _, membership := range memberships {
@@ -144,6 +150,7 @@ func TestLeaderEvicted(t *testing.T) {
 		memberships = append(memberships, memberShip)
 		waitForMembers(t, memberships...)
 	}
+
 	waitForMembers(t, memberships...)
 	require.Equal(t, 1, int(atomic.LoadInt64(&leaderCallbackCalledCounts[0])))
 	for i := 1; i < numMembers; i++ {
@@ -165,6 +172,7 @@ func TestLeaderEvicted(t *testing.T) {
 	}
 	for i := 0; i < numMembers; i++ {
 		require.Equal(t, 1, int(atomic.LoadInt64(&leaderCallbackCalledCounts[i])))
+
 	}
 }
 
