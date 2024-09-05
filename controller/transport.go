@@ -1,17 +1,14 @@
 package controller
 
-import (
-	"github.com/graph-gophers/graphql-go/errors"
-	"sync"
-)
-
 type Transport interface {
-	CreateConnection(address string, handler MessageHandler) (Connection, error)
+	CreateConnection(address string, handler ResponseHandler) (Connection, error)
 
-	RegisterHandler(handler MessageHandler)
+	RegisterHandler(handler RequestHandler)
 }
 
-type MessageHandler func(message []byte) error
+type ResponseHandler func(message []byte) error
+
+type RequestHandler func(message []byte, responseWriter ResponseHandler) error
 
 type Connection interface {
 	WriteMessage(message []byte) error

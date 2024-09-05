@@ -7,17 +7,17 @@ import (
 
 type LocalTransports struct {
 	lock       sync.RWMutex
-	transports map[string]MessageHandler
+	transports map[string]RequestHandler
 }
 
-func (lt *LocalTransports) deliverMessage(address string, message []byte) error {
+func (lt *LocalTransports) deliverMessage(address string, message []byte, responseHandler ResponseHandler) error {
 	lt.lock.RLock()
 	defer lt.lock.RUnlock()
 	handler, ok := lt.transports[address]
 	if !ok {
 		return errors.Errorf("no handler found for address %s", address)
 	}
-	return handler(message)
+	return handler(message, responseHandler)
 }
 
 func (lt *LocalTransports) NewLocalTransport(address string) (*LocalTransport, error) {
@@ -31,34 +31,38 @@ func (lt *LocalTransports) NewLocalTransport(address string) (*LocalTransport, e
 		address:    address,
 		transports: lt,
 	}
-	lt.transports[address] = transport.handleMessage
+	lt.transports[address] = transport.handleRequest
 	return transport, nil
 }
 
 type LocalTransport struct {
 	address    string
-	handler    MessageHandler
+	handler    RequestHandler
 	transports *LocalTransports
 }
 
-func (l *LocalTransport) handleMessage(message []byte) error {
-	return l.handler(message)
+func (l *LocalTransport) handleRequest(request []byte, responseWriter ResponseHandler) error {
+	return l.handler(request, responseWriter)
 }
 
-func (l *LocalTransport) CreateConnection(address string, handler MessageHandler) (Connection, error) {
-	return &LocalConnection{transport: l}, nil
+func (l *LocalTransport) CreateConnection(address string, handler ResponseHandler) (Connection, error) {
+	return &LocalConnection{
+		transport: l,
+		handler:   handler,
+	}, nil
 }
 
-func (l *LocalTransport) RegisterHandler(handler MessageHandler) {
+func (l *LocalTransport) RegisterHandler(handler RequestHandler) {
 	l.handler = handler
 }
 
 type LocalConnection struct {
 	transport *LocalTransport
+	handler   ResponseHandler
 }
 
 func (l *LocalConnection) WriteMessage(message []byte) error {
-	return l.transport.transports.deliverMessage(l.transport.address, message)
+	return l.transport.transports.deliverMessage(l.transport.address, message, l.handler)
 }
 
 func (l *LocalConnection) Close() error {

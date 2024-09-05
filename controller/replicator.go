@@ -2,7 +2,7 @@ package controller
 
 import (
 	"encoding/binary"
-	"github.com/graph-gophers/graphql-go/errors"
+	"github.com/pkg/errors"
 	log "github.com/spirit-labs/tektite/logger"
 	"sync"
 	"sync/atomic"
@@ -45,21 +45,25 @@ type ClusterState interface {
 }
 
 type Replicator struct {
-	replicationFactor int
-	minReplications int
+	transport            Transport
+	replicationFactor    int
+	minReplications      int
+	clusterStateProvider ClusterState
+}
+
+func (r *Replicator) NewReplicationGroup() *ReplicationGroup {
+
 }
 
 type ReplicationGroup struct {
-	replicator *Replicator
+	replicator            *Replicator
 	lock                  sync.Mutex
-	transport             Transport
-	connections          map[string]Connection
-	clusterStateProvider ClusterState
-	id                   int
+	commandType           int
+	connections           map[string]Connection
+	id                    int
 	commandSequence       int64
 	lastFlushedCommandSeq int64
 	epoch                 int64
-	commandType           CommandType
 	responseChan          atomic.Pointer[chan replicationResponse]
 }
 
@@ -74,10 +78,14 @@ const (
 
 func (e ErrorCode) String() string {
 	switch e {
-	case ErrorCodeNode: return ""
-	case ErrorCodeInvalidEpoch: return "replica invalid epoch"
-	case ErrorCodeNeedsInitialState: return "replica needs initial state"
-	case ErrorCodeInternalError: return "replica internal error"
+	case ErrorCodeNode:
+		return ""
+	case ErrorCodeInvalidEpoch:
+		return "replica invalid epoch"
+	case ErrorCodeNeedsInitialState:
+		return "replica needs initial state"
+	case ErrorCodeInternalError:
+		return "replica internal error"
 	default:
 		panic("unknown replicator code")
 	}
@@ -88,7 +96,7 @@ func (r *ReplicationGroup) getConnection(address string) (Connection, error) {
 	if exists {
 		return conn, nil
 	}
-	conn, err := r.transport.CreateConnection(address, func(message []byte) error {
+	conn, err := r.replicator.transport.CreateConnection(address, func(message []byte) error {
 		return r.handleResponse(address, message)
 	})
 	if err != nil {
@@ -127,7 +135,7 @@ func (r *ReplicationGroup) ReplicateCommand(command Command) error {
 		return err
 	}
 	r.commandSequence++
-	followers := r.clusterStateProvider.FollowerAddresses()
+	followers := r.replicator.clusterStateProvider.FollowerAddresses()
 	respCh := make(chan replicationResponse, len(followers))
 	r.responseChan.Store(&respCh)
 	for _, follower := range followers {
@@ -136,7 +144,7 @@ func (r *ReplicationGroup) ReplicateCommand(command Command) error {
 			return err
 		}
 		if err := conn.WriteMessage(buff); err != nil {
-			r.clusterStateProvider.FollowerFailure(follower, err)
+			r.replicator.clusterStateProvider.FollowerFailure(follower, err)
 			return err
 		}
 	}
@@ -145,7 +153,7 @@ func (r *ReplicationGroup) ReplicateCommand(command Command) error {
 		if replResp.errorCode != ErrorCodeNode {
 			err := errors.Errorf("Replica %s returned error code %d %s", replResp.address, replResp.errorCode,
 				replResp.errorCode.String())
-			r.clusterStateProvider.FollowerFailure(replResp.address, err)
+			r.replicator.clusterStateProvider.FollowerFailure(replResp.address, err)
 		} else {
 			successes++
 		}
