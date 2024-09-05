@@ -44,27 +44,57 @@ type ClusterState interface {
 	FollowerFailure(address string, err error)
 }
 
+func NewReplicator(transport Transport, replicationFactor int, clusterState ClusterState) *Replicator {
+	r := &Replicator{
+		transport:         transport,
+		replicationFactor: replicationFactor,
+		minReplications:   (replicationFactor + 1) / 2,
+		clusterState:      clusterState,
+	}
+	transport.RegisterHandler(r.handleRequest)
+	return r
+}
+
 type Replicator struct {
-	transport            Transport
-	replicationFactor    int
-	minReplications      int
-	clusterStateProvider ClusterState
+	lock              sync.RWMutex
+	transport         Transport
+	replicationFactor int
+	minReplications   int
+	clusterState      ClusterState
+	groups            map[int]*ReplicationGroup
+}
+
+func (r *Replicator) handleRequest(message []byte, responseWriter ResponseHandler) error {
+	r.lock.RLock()
+	defer r.lock.RUnlock()
+	groupID := binary.BigEndian.Uint64(message)
+	group, ok := r.groups[int(groupID)]
+	if !ok {
+		return errors.Errorf("group %d not found", groupID)
+	}
+	return group.handleRequest(message[8:], responseWriter)
 }
 
 func (r *Replicator) NewReplicationGroup() *ReplicationGroup {
-
+	return &ReplicationGroup{
+		replicator:  r,
+		connections: make(map[string]Connection),
+	}
 }
 
 type ReplicationGroup struct {
-	replicator            *Replicator
-	lock                  sync.Mutex
-	commandType           int
-	connections           map[string]Connection
-	id                    int
-	commandSequence       int64
-	lastFlushedCommandSeq int64
-	epoch                 int64
-	responseChan          atomic.Pointer[chan replicationResponse]
+	replicator                *Replicator
+	lock                      sync.Mutex
+	commandType               int
+	connections               map[string]Connection
+	id                        int
+	lastSentCommandSeq        int64
+	lastSentFlushedCommandSeq int64
+
+	lastReceivedCommandSeq        int64
+	lastReceivedFlushedCommandSeq int64
+	epoch                         int64
+	responseChan                  atomic.Pointer[chan replicationResponse]
 }
 
 type ErrorCode int16
@@ -126,16 +156,16 @@ func (r *ReplicationGroup) ReplicateCommand(command Command) error {
 	defer r.lock.Unlock()
 	buff := make([]byte, 0, 64)
 	buff = binary.BigEndian.AppendUint64(buff, uint64(r.id))
-	buff = binary.BigEndian.AppendUint64(buff, uint64(r.commandSequence))
-	buff = binary.BigEndian.AppendUint64(buff, uint64(r.lastFlushedCommandSeq))
+	buff = binary.BigEndian.AppendUint64(buff, uint64(r.lastSentCommandSeq))
+	buff = binary.BigEndian.AppendUint64(buff, uint64(r.lastSentFlushedCommandSeq))
 	buff = binary.BigEndian.AppendUint64(buff, uint64(r.epoch))
 	buff = binary.BigEndian.AppendUint16(buff, uint16(r.commandType))
 	buff, err := command.Serialize(buff)
 	if err != nil {
 		return err
 	}
-	r.commandSequence++
-	followers := r.replicator.clusterStateProvider.FollowerAddresses()
+	r.lastSentCommandSeq++
+	followers := r.replicator.clusterState.FollowerAddresses()
 	respCh := make(chan replicationResponse, len(followers))
 	r.responseChan.Store(&respCh)
 	for _, follower := range followers {
@@ -144,7 +174,7 @@ func (r *ReplicationGroup) ReplicateCommand(command Command) error {
 			return err
 		}
 		if err := conn.WriteMessage(buff); err != nil {
-			r.replicator.clusterStateProvider.FollowerFailure(follower, err)
+			r.replicator.clusterState.FollowerFailure(follower, err)
 			return err
 		}
 	}
@@ -153,7 +183,7 @@ func (r *ReplicationGroup) ReplicateCommand(command Command) error {
 		if replResp.errorCode != ErrorCodeNode {
 			err := errors.Errorf("Replica %s returned error code %d %s", replResp.address, replResp.errorCode,
 				replResp.errorCode.String())
-			r.replicator.clusterStateProvider.FollowerFailure(replResp.address, err)
+			r.replicator.clusterState.FollowerFailure(replResp.address, err)
 		} else {
 			successes++
 		}
@@ -164,6 +194,12 @@ func (r *ReplicationGroup) ReplicateCommand(command Command) error {
 			r.replicator.minReplications, successes)
 	}
 	return nil
+}
+
+func (r *ReplicationGroup) handleRequest(message []byte, responseWriter ResponseHandler) error {
+	commandSequence := int64(binary.BigEndian.Uint64(message))
+	lastFlushedCommandSeq := int64(binary.BigEndian.Uint64(message[8:]))
+
 }
 
 func (r *ReplicationGroup) Close() {
