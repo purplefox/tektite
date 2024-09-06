@@ -1,9 +1,17 @@
-package controller
+package transport
 
 import (
-	"github.com/graph-gophers/graphql-go/errors"
+	"github.com/pkg/errors"
+	"github.com/spirit-labs/tektite/common"
+	log "github.com/spirit-labs/tektite/logger"
 	"sync"
 )
+
+func NewLocalTransports() *LocalTransports {
+	return &LocalTransports{
+		transports: map[string]RequestHandler{},
+	}
+}
 
 type LocalTransports struct {
 	lock       sync.RWMutex
@@ -48,6 +56,7 @@ func (l *LocalTransport) handleRequest(request []byte, responseWriter ResponseHa
 func (l *LocalTransport) CreateConnection(address string, handler ResponseHandler) (Connection, error) {
 	return &LocalConnection{
 		transport: l,
+		address:   address,
 		handler:   handler,
 	}, nil
 }
@@ -58,11 +67,18 @@ func (l *LocalTransport) RegisterHandler(handler RequestHandler) {
 
 type LocalConnection struct {
 	transport *LocalTransport
+	address   string
 	handler   ResponseHandler
 }
 
 func (l *LocalConnection) WriteMessage(message []byte) error {
-	return l.transport.transports.deliverMessage(l.transport.address, message, l.handler)
+	msgCopy := common.ByteSliceCopy(message)
+	go func() {
+		if err := l.transport.transports.deliverMessage(l.address, msgCopy, l.handler); err != nil {
+			log.Errorf("failed to deliver message: %v", err)
+		}
+	}()
+	return nil
 }
 
 func (l *LocalConnection) Close() error {

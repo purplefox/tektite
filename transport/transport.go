@@ -1,4 +1,4 @@
-package controller
+package transport
 
 type Transport interface {
 	CreateConnection(address string, handler ResponseHandler) (Connection, error)
