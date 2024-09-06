@@ -36,14 +36,6 @@ type Command interface {
 	Deserialize(buff []byte) ([]byte, error)
 }
 
-type HandlerFactories struct {
-	factories map[CommandType]HandlerFactory
-}
-
-type HandlerFactory interface {
-	CreateCommand(commandType CommandType) Command
-}
-
 type ClusterState interface {
 	FollowerAddresses() []string
 	FollowerFailure(address string, err error)
@@ -69,24 +61,23 @@ type Replicator struct {
 	handlerGroups     [][]*ReplicationGroup
 }
 
-type CommandHandlerFactory func() CommandHandler
+type StateMachineFactory func() StateMachine
 
-type CommandHandler interface {
+type StateMachine interface {
 	NewCommand() (Command, error)
-	HandleLeader(command Command) (any, error)
-	HandleFollower(command Command, commandSequence int64, lastFlushedSequence int64) error
-
+	UpdateState(command Command, commandSequence int64, lastFlushedSequence int64) (any, error)
 	// Flush is called periodically to signal the handler that it should flush it's state. When it has done so the
 	// the handler must call `completionFunc` with the last flushed sequence
 	Flush(completionFunc func(lastFlushedSequence int64) error) error
 }
 
-func (r *Replicator) RegisterCommandHandlerFactory(typ CommandType, factory CommandHandlerFactory, numGroups int) {
+func (r *Replicator) RegisterStateMachineFactory(typ CommandType, factory StateMachineFactory, numGroups int) {
 	r.lock.Lock()
 	defer r.lock.Unlock()
-	if len(r.handlerGroups) < int(typ) {
-		newGroups := make([][]*ReplicationGroup, int(typ))
+	if len(r.handlerGroups) < int(typ)+1 {
+		newGroups := make([][]*ReplicationGroup, int(typ)+1)
 		copy(newGroups, r.handlerGroups)
+		r.handlerGroups = newGroups
 	}
 	groups := r.handlerGroups[typ]
 	if groups != nil {
@@ -95,23 +86,24 @@ func (r *Replicator) RegisterCommandHandlerFactory(typ CommandType, factory Comm
 	group := make([]*ReplicationGroup, numGroups)
 	for i := 0; i < numGroups; i++ {
 		group[i] = &ReplicationGroup{
-			replicator:     r,
-			id:             i,
-			commandType:    typ,
-			commandHandler: factory(),
-			connections:    make(map[string]transport.Connection),
+			replicator:        r,
+			id:                i,
+			commandType:       typ,
+			stateMachine:      factory(),
+			connections:       make(map[string]transport.Connection),
+			flushedCommandSeq: -1,
 		}
 	}
 	r.handlerGroups[typ] = group
 }
 
-func (r *Replicator) ExecLeader(command Command) (any, error) {
+func (r *Replicator) ApplyCommand(command Command) (any, error) {
 	r.lock.RLock()
 	defer r.lock.RUnlock()
 	handlerGroups := r.handlerGroups[command.Type()]
 	groupID := command.GroupID(len(handlerGroups))
 	group := handlerGroups[groupID]
-	res, err := group.commandHandler.HandleLeader(command)
+	res, err := group.stateMachine.UpdateState(command, group.commandSeq, group.flushedCommandSeq)
 	if err != nil {
 		return nil, err
 	}
@@ -119,15 +111,6 @@ func (r *Replicator) ExecLeader(command Command) (any, error) {
 		return nil, err
 	}
 	return res, nil
-}
-
-func (r *Replicator) handleRequest(message []byte, responseWriter transport.ResponseHandler) error {
-	r.lock.RLock()
-	defer r.lock.RUnlock()
-	commandType := CommandType(binary.BigEndian.Uint16(message))
-	groupID := int(binary.BigEndian.Uint64(message[2:]))
-	group := r.handlerGroups[commandType][groupID]
-	return group.handleRequest(message[10:], responseWriter)
 }
 
 func (r *Replicator) Close() {
@@ -141,18 +124,35 @@ func (r *Replicator) Close() {
 	r.handlerGroups = nil
 }
 
+func (r *Replicator) GetGroups(commandType CommandType) map[int]*ReplicationGroup {
+	r.lock.RLock()
+	defer r.lock.RUnlock()
+	groups := r.handlerGroups[commandType]
+	groupsCopy:= make(map[int]*ReplicationGroup, len(groups))
+	for id, group := range groups {
+		groupsCopy[id] = group
+	}
+	return groupsCopy
+}
+
+func (r *Replicator) handleRequest(message []byte, responseWriter transport.ResponseHandler) error {
+	r.lock.RLock()
+	defer r.lock.RUnlock()
+	commandType := CommandType(binary.BigEndian.Uint16(message))
+	groupID := int(binary.BigEndian.Uint64(message[2:]))
+	group := r.handlerGroups[commandType][groupID]
+	return group.handleRequest(message[10:], responseWriter)
+}
+
 type ReplicationGroup struct {
 	replicator                *Replicator
 	lock                      sync.Mutex
 	commandType               CommandType
 	connections               map[string]transport.Connection
-	id                        int
-	commandHandler            CommandHandler
-	lastSentCommandSeq        int64
-	lastSentFlushedCommandSeq int64
-
-	lastReceivedCommandSeq        int64
-	lastReceivedFlushedCommandSeq int64
+	id           int
+	stateMachine StateMachine
+	commandSeq   int64
+	flushedCommandSeq int64
 	epoch                         int64
 	responseHolder                atomic.Pointer[responseChanHolder]
 }
@@ -234,8 +234,8 @@ func (r *ReplicationGroup) replicateCommand(command Command) error {
 	buff := make([]byte, 0, 64)
 	buff = binary.BigEndian.AppendUint16(buff, uint16(r.commandType))
 	buff = binary.BigEndian.AppendUint64(buff, uint64(r.id))
-	buff = binary.BigEndian.AppendUint64(buff, uint64(r.lastSentCommandSeq))
-	buff = binary.BigEndian.AppendUint64(buff, uint64(r.lastSentFlushedCommandSeq))
+	buff = binary.BigEndian.AppendUint64(buff, uint64(r.commandSeq))
+	buff = binary.BigEndian.AppendUint64(buff, uint64(r.flushedCommandSeq))
 	buff = binary.BigEndian.AppendUint64(buff, uint64(r.epoch))
 	buff, err := command.Serialize(buff)
 	if err != nil {
@@ -243,10 +243,10 @@ func (r *ReplicationGroup) replicateCommand(command Command) error {
 	}
 	followers := r.replicator.clusterState.FollowerAddresses()
 	respHolder := &responseChanHolder{
-		commandSequence: r.lastSentCommandSeq,
+		commandSequence: r.commandSeq,
 		ch:              make(chan replicationResponse, len(followers)),
 	}
-	r.lastSentCommandSeq++
+	r.commandSeq++
 	r.responseHolder.Store(respHolder)
 	sentFollowers := make([]string, 0, len(followers))
 	for _, follower := range followers {
@@ -305,39 +305,40 @@ func (r *ReplicationGroup) sendReplicationWithRetry(conn transport.Connection, a
 }
 
 func (r *ReplicationGroup) handleRequest(message []byte, responseWriter transport.ResponseHandler) error {
-	commandSequence := int64(binary.BigEndian.Uint64(message))
-	lastFlushedSequence := int64(binary.BigEndian.Uint64(message[8:]))
+	commandSeq := int64(binary.BigEndian.Uint64(message))
+	flushedCommandSeq := int64(binary.BigEndian.Uint64(message[8:]))
 	epoch := int64(binary.BigEndian.Uint64(message[16:]))
 
 	// TODO check not leader
 
-	if commandSequence < r.lastReceivedCommandSeq {
-		log.Warnf("replicator group %d duplicate command received: %d expected: %d", r.id, commandSequence,
-			r.lastReceivedCommandSeq+1)
-		return r.writeReplicationResponse(ErrorCodeNode, commandSequence, responseWriter)
+	if commandSeq < r.commandSeq {
+		log.Warnf("replicator group %d duplicate command received: %d expected: %d", r.id, commandSeq,
+			r.commandSeq+1)
+		return r.writeReplicationResponse(ErrorCodeNode, commandSeq, responseWriter)
 	}
-	if commandSequence > r.lastReceivedCommandSeq+1 {
-		log.Warnf("replicator group %d unexpected command received: %d expected: %d - needs initialisation", r.id, commandSequence,
-			r.lastReceivedCommandSeq+1)
-		return r.writeReplicationResponse(ErrorCodeNeedsInitialState, commandSequence, responseWriter)
+	if commandSeq > r.commandSeq+1 {
+		log.Warnf("replicator group %d unexpected command received: %d expected: %d - needs initialisation", r.id, commandSeq,
+			r.commandSeq+1)
+		return r.writeReplicationResponse(ErrorCodeNeedsInitialState, commandSeq, responseWriter)
 	}
 	if r.epoch != epoch {
 		log.Warnf("replicator group %d received replication at wrong epoch received: %d expected: %d", r.id, epoch,
 			r.epoch)
-		return r.writeReplicationResponse(ErrorCodeInvalidEpoch, commandSequence, responseWriter)
+		return r.writeReplicationResponse(ErrorCodeInvalidEpoch, commandSeq, responseWriter)
 	}
 	command, err := r.createCommand(message[24:])
 	if err != nil {
 		return err
 	}
-	if err = r.commandHandler.HandleFollower(command, commandSequence, lastFlushedSequence); err != nil {
+	_, err = r.stateMachine.UpdateState(command, commandSeq, flushedCommandSeq)
+	if err != nil {
 		return err
 	}
-	return r.writeReplicationResponse(ErrorCodeNode, commandSequence, responseWriter)
+	return r.writeReplicationResponse(ErrorCodeNode, commandSeq, responseWriter)
 }
 
 func (r *ReplicationGroup) createCommand(message []byte) (Command, error) {
-	command, err := r.commandHandler.NewCommand()
+	command, err := r.stateMachine.NewCommand()
 	if err != nil {
 		return nil, err
 	}

@@ -26,7 +26,7 @@ func (c *Controller) GetOffsets(topicName string, partition int, numOffsets int)
 		numOffsets: numOffsets,
 	}
 	// TODO maybe make generic to avoid cast
-	r, err := c.replicator.ExecLeader(command)
+	r, err := c.replicator.ApplyCommand(command)
 	if err != nil {
 		return 0, err
 	}
