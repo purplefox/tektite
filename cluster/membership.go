@@ -9,25 +9,26 @@ import (
 )
 
 type Membership struct {
-	updateInterval       time.Duration
-	evictionInterval     time.Duration
-	updateTimer          *time.Timer
-	lock                 sync.Mutex
-	started              bool
-	stateMachine         *StateMachine[MembershipState]
-	address              string
-	leader               bool
-	becomeLeaderCallback func()
+	updateInterval            time.Duration
+	evictionInterval          time.Duration
+	updateTimer               *time.Timer
+	lock                      sync.RWMutex
+	started                   bool
+	stateMachine              *StateMachine[MembershipState]
+	address                   string
+	currentState              MembershipState
+	membershipChangedCallback func(state MembershipState)
 }
 
 func NewMembership(bucket string, keyPrefix string, address string, objStoreClient objstore.Client, updateInterval time.Duration,
-	evictionInterval time.Duration, becomeLeaderCallback func()) *Membership {
+	evictionInterval time.Duration, membershipChangedCallback func(state MembershipState)) *Membership {
 	return &Membership{
-		address:              address,
-		stateMachine:         NewStateMachine[MembershipState](bucket, keyPrefix, objStoreClient, StateMachineOpts{}),
-		updateInterval:       updateInterval,
-		evictionInterval:     evictionInterval,
-		becomeLeaderCallback: becomeLeaderCallback,
+		address:                   address,
+		stateMachine:              NewStateMachine[MembershipState](bucket, keyPrefix, objStoreClient, StateMachineOpts{}),
+		updateInterval:            updateInterval,
+		evictionInterval:          evictionInterval,
+		membershipChangedCallback: membershipChangedCallback,
+		currentState:              MembershipState{Epoch: -1},
 	}
 }
 
@@ -70,22 +71,23 @@ func (m *Membership) updateOnTimer() {
 }
 
 func (m *Membership) update() error {
+	prevEpoch := m.currentState.Epoch
 	newState, err := m.stateMachine.Update(m.updateState)
 	if err != nil {
 		return err
 	}
-	if newState.Members[0].Address == m.address {
-		if !m.leader {
-			m.becomeLeaderCallback()
-		}
-		m.leader = true
+	m.currentState = newState
+	if prevEpoch != newState.Epoch {
+		m.membershipChangedCallback(newState)
 	}
 	return nil
 }
 
+// membershipState is immutable
 func (m *Membership) updateState(memberShipState MembershipState) (MembershipState, error) {
 	now := time.Now().UnixMilli()
 	found := false
+	var newState MembershipState
 	var newMembers []MembershipEntry
 	changed := false
 	for _, member := range memberShipState.Members {
@@ -109,12 +111,13 @@ func (m *Membership) updateState(memberShipState MembershipState) (MembershipSta
 		})
 		changed = true
 	}
-	memberShipState.Members = newMembers
+	newState.Members = newMembers
+	newState.Epoch = memberShipState.Epoch
 	if changed {
-		// NewmMember joined or member(s) where evicted, so we change the epoch
-		memberShipState.Epoch++
+		// New member joined or member(s) where evicted, so we change the epoch
+		newState.Epoch++
 	}
-	return memberShipState, nil
+	return newState, nil
 }
 
 type MembershipState struct {
@@ -128,10 +131,26 @@ type MembershipEntry struct {
 }
 
 func (m *Membership) GetState() (MembershipState, error) {
-	m.lock.Lock()
-	defer m.lock.Unlock()
+	m.lock.RLock()
+	defer m.lock.RUnlock()
 	if !m.started {
 		return MembershipState{}, errors.New("not started")
 	}
-	return m.stateMachine.GetState()
+	return m.currentState, nil
+}
+
+func (m *Membership) IsLeader(address string) (bool, error) {
+	m.lock.RLock()
+	defer m.lock.RUnlock()
+	if !m.started {
+		return false, errors.New("not started")
+	}
+	state, err := m.stateMachine.GetState()
+	if err != nil {
+		return false, err
+	}
+	if len(state.Members) > 0 && state.Members[0].Address == address {
+		return true, nil
+	}
+	return false, nil
 }

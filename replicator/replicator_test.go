@@ -3,6 +3,7 @@ package replicator
 import (
 	"encoding/binary"
 	"github.com/google/uuid"
+	"github.com/spirit-labs/tektite/cluster"
 	log "github.com/spirit-labs/tektite/logger"
 	"github.com/spirit-labs/tektite/transport"
 	"github.com/stretchr/testify/require"
@@ -30,18 +31,19 @@ func TestReplicator(t *testing.T) {
 
 	replicators := make([]*Replicator, numReplicas)
 
-	clusterState := &testClusterState{}
-
 	numGroups := 10
+
+	initialState := cluster.MembershipState{
+		Epoch: 1,
+	}
 
 	for i := 0; i < numReplicas; i++ {
 		address := uuid.New().String()
-		if i != 0 {
-			clusterState.followers = append(clusterState.followers, address)
-		}
+		initialState.Members = append(initialState.Members, cluster.MembershipEntry{Address: address})
 		trans, err := localTransports.NewLocalTransport(address)
 		require.NoError(t, err)
-		replicator := NewReplicator(trans, numReplicas, clusterState)
+		replicator := NewReplicator(trans, numReplicas, address, func(s string) {
+		})
 		replicator.RegisterStateMachineFactory(testCommandType, func() StateMachine {
 			return &testCommandHandler{}
 		}, numGroups)
@@ -50,6 +52,11 @@ func TestReplicator(t *testing.T) {
 
 	command := &testCommand{
 		data: "some-data",
+	}
+
+	// Apply the initial cluster state
+	for i := 0; i < numReplicas; i++ {
+		replicators[i].MembershipChanged(initialState)
 	}
 
 	_, err := replicators[0].ApplyCommand(command)

@@ -2,8 +2,10 @@ package replicator
 
 import (
 	"encoding/binary"
+	"fmt"
 	"github.com/pkg/errors"
 	"github.com/spirit-labs/tektite/asl/arista"
+	"github.com/spirit-labs/tektite/cluster"
 	log "github.com/spirit-labs/tektite/logger"
 	"github.com/spirit-labs/tektite/transport"
 	"sync"
@@ -36,17 +38,13 @@ type Command interface {
 	Deserialize(buff []byte) ([]byte, error)
 }
 
-type ClusterState interface {
-	FollowerAddresses() []string
-	FollowerFailure(address string, err error)
-}
-
-func NewReplicator(transport transport.Transport, replicationFactor int, clusterState ClusterState) *Replicator {
+func NewReplicator(transport transport.Transport, replicationFactor int, address string, memberFailedFunc func(string)) *Replicator {
 	r := &Replicator{
 		transport:         transport,
+		address:           address,
 		replicationFactor: replicationFactor,
 		minReplications:   (replicationFactor + 1) / 2,
-		clusterState:      clusterState,
+		memberFailedFunc:  memberFailedFunc,
 	}
 	transport.RegisterHandler(r.handleRequest)
 	return r
@@ -54,11 +52,14 @@ func NewReplicator(transport transport.Transport, replicationFactor int, cluster
 
 type Replicator struct {
 	lock              sync.RWMutex
+	address           string
 	transport         transport.Transport
 	replicationFactor int
 	minReplications   int
-	clusterState      ClusterState
 	handlerGroups     [][]*ReplicationGroup
+	memberFailedFunc  func(string)
+	membership        *cluster.MembershipState
+	leader            bool
 }
 
 type StateMachineFactory func() StateMachine
@@ -66,8 +67,8 @@ type StateMachineFactory func() StateMachine
 type StateMachine interface {
 	NewCommand() (Command, error)
 	UpdateState(command Command, commandSequence int64, lastFlushedSequence int64) (any, error)
-	// Flush is called periodically to signal the handler that it should flush it's state. When it has done so the
-	// the handler must call `completionFunc` with the last flushed sequence
+	// Flush is called periodically to signal the handler that it should flush it's state. When it has done so, the
+	// handler must call `completionFunc` with the last flushed sequence
 	Flush(completionFunc func(lastFlushedSequence int64) error) error
 }
 
@@ -100,6 +101,15 @@ func (r *Replicator) RegisterStateMachineFactory(typ CommandType, factory StateM
 func (r *Replicator) ApplyCommand(command Command) (any, error) {
 	r.lock.RLock()
 	defer r.lock.RUnlock()
+	if r.membership == nil || !r.leader {
+		return nil, &ReplicationError{Msg: "not leader", ErrorCode: ErrorCodeNotLeader}
+	}
+	if len(r.membership.Members)-1 < r.minReplications {
+		return nil, &ReplicationError{
+			Msg:       "insufficient followers",
+			ErrorCode: ErrorCodeInsufficientFollowers,
+		}
+	}
 	handlerGroups := r.handlerGroups[command.Type()]
 	groupID := command.GroupID(len(handlerGroups))
 	group := handlerGroups[groupID]
@@ -111,6 +121,32 @@ func (r *Replicator) ApplyCommand(command Command) (any, error) {
 		return nil, err
 	}
 	return res, nil
+}
+
+func (r *Replicator) MembershipChanged(membership cluster.MembershipState) {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+	r.membership = &membership
+	prevLeader := r.leader
+	r.leader = len(r.membership.Members) > 0 && r.membership.Members[0].Address == r.address
+	if !prevLeader && r.leader {
+		r.promoteToLeader()
+	} else if prevLeader && !r.leader {
+		r.demoteFromLeader()
+	}
+}
+
+func (r *Replicator) promoteToLeader() {
+	// TODO
+	// call all groups to promote to leader
+	// groups need to initialise state, and when they are done they will mark themselves as ready
+
+	// start flush timer
+}
+
+func (r *Replicator) demoteFromLeader() {
+	// TODO
+	// stop flush timer
 }
 
 func (r *Replicator) Close() {
@@ -128,7 +164,7 @@ func (r *Replicator) GetGroups(commandType CommandType) map[int]*ReplicationGrou
 	r.lock.RLock()
 	defer r.lock.RUnlock()
 	groups := r.handlerGroups[commandType]
-	groupsCopy:= make(map[int]*ReplicationGroup, len(groups))
+	groupsCopy := make(map[int]*ReplicationGroup, len(groups))
 	for id, group := range groups {
 		groupsCopy[id] = group
 	}
@@ -145,26 +181,38 @@ func (r *Replicator) handleRequest(message []byte, responseWriter transport.Resp
 }
 
 type ReplicationGroup struct {
-	replicator                *Replicator
-	lock                      sync.Mutex
-	commandType               CommandType
-	connections               map[string]transport.Connection
-	id           int
-	stateMachine StateMachine
-	commandSeq   int64
+	replicator        *Replicator
+	lock              sync.Mutex
+	commandType       CommandType
+	connections       map[string]transport.Connection
+	id                int
+	stateMachine      StateMachine
+	commandSeq        int64
 	flushedCommandSeq int64
-	epoch                         int64
-	responseHolder                atomic.Pointer[responseChanHolder]
+	epoch             int64
+	responseHolder    atomic.Pointer[responseChanHolder]
 }
 
 type ErrorCode int16
 
 const (
-	ErrorCodeNode              ErrorCode = 0
-	ErrorCodeInvalidEpoch      ErrorCode = 1
-	ErrorCodeNeedsInitialState ErrorCode = 2
-	ErrorCodeInternalError     ErrorCode = 3
+	ErrorCodeNode                     ErrorCode = 0
+	ErrorCodeInvalidEpoch             ErrorCode = 1
+	ErrorCodeNeedsInitialState        ErrorCode = 2
+	ErrorCodeInternalError            ErrorCode = 3
+	ErrorCodeNotLeader                ErrorCode = 4
+	ErrorCodeInsufficientFollowers    ErrorCode = 5
+	ErrorCodeInsufficientReplications ErrorCode = 6
 )
+
+type ReplicationError struct {
+	Msg       string
+	ErrorCode ErrorCode
+}
+
+func (r ReplicationError) Error() string {
+	return fmt.Sprintf("replication error: %d %s", r.ErrorCode, r.Msg)
+}
 
 func (e ErrorCode) String() string {
 	switch e {
@@ -241,7 +289,8 @@ func (r *ReplicationGroup) replicateCommand(command Command) error {
 	if err != nil {
 		return err
 	}
-	followers := r.replicator.clusterState.FollowerAddresses()
+	members := r.replicator.membership.Members
+	followers := members[1:]
 	respHolder := &responseChanHolder{
 		commandSequence: r.commandSeq,
 		ch:              make(chan replicationResponse, len(followers)),
@@ -250,17 +299,21 @@ func (r *ReplicationGroup) replicateCommand(command Command) error {
 	r.responseHolder.Store(respHolder)
 	sentFollowers := make([]string, 0, len(followers))
 	for _, follower := range followers {
-		conn, err := r.getConnection(follower)
+		address := follower.Address
+		conn, err := r.getConnection(address)
 		if err != nil {
 			return err
 		}
-		sent := r.sendReplicationWithRetry(conn, follower, buff)
+		sent := r.sendReplicationWithRetry(conn, address, buff)
 		if sent {
-			sentFollowers = append(sentFollowers, follower)
+			sentFollowers = append(sentFollowers, address)
 		}
 	}
 	if len(sentFollowers) < r.replicator.minReplications {
-		return errors.Errorf("unable to replicate to sufficient replicas")
+		return &ReplicationError{
+			Msg:       "failed to replicate to sufficient followers",
+			ErrorCode: ErrorCodeInsufficientReplications,
+		}
 	}
 	// TODO should we check received addresses???
 	var successes int
@@ -269,9 +322,9 @@ loop:
 		select {
 		case resp := <-respHolder.ch:
 			if resp.errorCode != ErrorCodeNode {
-				err = errors.Errorf("Replica %s returned error code %d %s", resp.address, resp.errorCode,
+				log.Warnf("Replica %s returned error code %d %s", resp.address, resp.errorCode,
 					resp.errorCode.String())
-				r.replicator.clusterState.FollowerFailure(resp.address, err)
+				r.replicator.memberFailedFunc(resp.address)
 			} else {
 				successes++
 			}
@@ -295,7 +348,7 @@ func (r *ReplicationGroup) sendReplicationWithRetry(conn transport.Connection, a
 		}
 		if int64(arista.NanoTime()-start) >= networkErrorMaxRetryDuration.Nanoseconds() {
 			log.Errorf("error in writing replication, follower will be marked invalid %v", err)
-			r.replicator.clusterState.FollowerFailure(address, err)
+			r.replicator.memberFailedFunc(address)
 			return false
 		}
 		log.Warnf("error when sending replication - will retry %v", err)
