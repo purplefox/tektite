@@ -113,6 +113,8 @@ func (r *Replicator) ApplyCommand(command Command) (any, error) {
 	handlerGroups := r.handlerGroups[command.Type()]
 	groupID := command.GroupID(len(handlerGroups))
 	group := handlerGroups[groupID]
+	// FIXME cannot update state machine state until *after* replication, otherwise state can be seen externally
+	// e.g. LSM queries before it's been "committed"
 	res, err := group.stateMachine.UpdateState(command, group.commandSeq, group.flushedCommandSeq)
 	if err != nil {
 		return nil, err
@@ -196,13 +198,14 @@ type ReplicationGroup struct {
 type ErrorCode int16
 
 const (
-	ErrorCodeNode                     ErrorCode = 0
-	ErrorCodeInvalidEpoch             ErrorCode = 1
-	ErrorCodeNeedsInitialState        ErrorCode = 2
-	ErrorCodeInternalError            ErrorCode = 3
-	ErrorCodeNotLeader                ErrorCode = 4
-	ErrorCodeInsufficientFollowers    ErrorCode = 5
-	ErrorCodeInsufficientReplications ErrorCode = 6
+	ErrorCodeNode ErrorCode = iota
+	ErrorCodeInvalidEpoch
+	ErrorCodeLeaderSequenceTooAdvanced
+	ErrorCodeInternalError
+	ErrorCodeNotLeader
+	ErrorCodeLeader
+	ErrorCodeInsufficientFollowers
+	ErrorCodeInsufficientReplications
 )
 
 type ReplicationError struct {
@@ -220,10 +223,16 @@ func (e ErrorCode) String() string {
 		return ""
 	case ErrorCodeInvalidEpoch:
 		return "replica invalid epoch"
-	case ErrorCodeNeedsInitialState:
-		return "replica needs initial state"
+	case ErrorCodeLeaderSequenceTooAdvanced:
+		return "leader sequence too advanced"
 	case ErrorCodeInternalError:
 		return "replica internal error"
+	case ErrorCodeLeader:
+		return "not leader"
+	case ErrorCodeInsufficientFollowers:
+		return "insufficient followers"
+	case ErrorCodeInsufficientReplications:
+		return "insufficient replications"
 	default:
 		panic("unknown replicator code")
 	}
@@ -332,6 +341,7 @@ loop:
 			break loop
 		}
 	}
+	// TODO deal with ErrorCodeLeaderSequenceTooAdvanced
 	if successes < r.replicator.minReplications {
 		// Insufficient replications
 		return errors.Errorf("unable to replicate to sufficient replicas")
@@ -362,17 +372,23 @@ func (r *ReplicationGroup) handleRequest(message []byte, responseWriter transpor
 	flushedCommandSeq := int64(binary.BigEndian.Uint64(message[8:]))
 	epoch := int64(binary.BigEndian.Uint64(message[16:]))
 
-	// TODO check not leader
-
+	if r.replicator.leader {
+		log.Warnf("replication arrived at leader: %s", r.replicator.address)
+		return r.writeReplicationResponse(ErrorCodeLeader, commandSeq, responseWriter)
+	}
 	if commandSeq < r.commandSeq {
 		log.Warnf("replicator group %d duplicate command received: %d expected: %d", r.id, commandSeq,
 			r.commandSeq+1)
 		return r.writeReplicationResponse(ErrorCodeNode, commandSeq, responseWriter)
 	}
 	if commandSeq > r.commandSeq+1 {
-		log.Warnf("replicator group %d unexpected command received: %d expected: %d - needs initialisation", r.id, commandSeq,
+		// This can occur if one of the followers has a higher command sequence than others then becomes leader
+		// and then replicates at that higher sequence to a follower who sees a gap in the sequences.
+		// A follower can have a higher sequence if a previous replication failed after replicating to some but not all
+		// followers.
+		log.Warnf("replicator group %d unexpected command received: %d expected: %d - leader sequence too advanced", r.id, commandSeq,
 			r.commandSeq+1)
-		return r.writeReplicationResponse(ErrorCodeNeedsInitialState, commandSeq, responseWriter)
+		return r.writeReplicationResponse(ErrorCodeLeaderSequenceTooAdvanced, commandSeq, responseWriter)
 	}
 	if r.epoch != epoch {
 		log.Warnf("replicator group %d received replication at wrong epoch received: %d expected: %d", r.id, epoch,
