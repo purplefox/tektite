@@ -25,13 +25,15 @@ type StateMachine interface {
 	UpdateState(command Command, commandSequence int64) (any, error)
 	// Flush is called on the leader to flush persisted state to storage - flush can occur asynchronously and when complete
 	// flushCompleted must be called with the sequence number flushed
-	Flush(flushCompleted func(int64)) error
+	Flush(flushCompleted func(flushedSequence int64, err error)) error
 	// Flushed is called on the followers to signal that commands up to and including flushedCommandSeq have been flushed
 	// followers can then discard any state before that, if they want
 	Flushed(flushedCommandSeq int64) error
 	// Initialise is called on a new follower when it joins - it should load any state from permanent storage from the provided
 	// sequence number
 	Initialise(commandSequence int64) error
+	// Reset - resets all internal state
+	Reset() error
 }
 
 type Command interface {
@@ -61,7 +63,18 @@ type Replicator struct {
 	groups            map[int]*ReplicationGroup
 	membership        *cluster.MembershipState
 	leader            bool
+	state             ReplicaState
+	syncingFollowers  []string
 }
+
+type ReplicaState int
+
+const (
+	ReplicaStateUninitialised = ReplicaState(iota)
+	ReplicaStateLeader
+	ReplicaStateInvalidFollower
+	ReplicaStateFollower
+)
 
 func (r *Replicator) CreateGroup(id int, stateMachine StateMachine) error {
 	r.lock.Lock()
@@ -83,11 +96,41 @@ func (r *Replicator) CreateGroup(id int, stateMachine StateMachine) error {
 func (r *Replicator) ApplyCommand(command Command, groupID int) (any, error) {
 	r.lock.RLock()
 	defer r.lock.RUnlock()
+	if r.state == ReplicaStateUninitialised {
+		return nil, &ReplicationError{ErrorCode: ErrorCodeLeaderNotInitialised}
+	}
+	if r.state != ReplicaStateLeader {
+		return nil, &ReplicationError{ErrorCode: ErrorCodeNotLeader}
+	}
+	if len(r.membership.Members)-1 < r.minReplications {
+		return nil, &ReplicationError{ErrorCode: ErrorCodeInsufficientFollowers}
+	}
 	group, ok := r.groups[groupID]
 	if !ok {
 		return nil, fmt.Errorf("group with id %d not found", groupID)
 	}
 	return group.applyCommand(command)
+}
+
+func (r *Replicator) Flush() error {
+	r.lock.RLock()
+	defer r.lock.RUnlock()
+	if r.state != ReplicaStateLeader {
+		return nil
+	}
+	resultCh := make(chan flushResult, len(r.groups))
+	for _, group := range r.groups {
+		if err := group.flush(resultCh); err != nil {
+			return err
+		}
+	}
+	for i := 0; i < len(r.groups); i++ {
+		res := <-resultCh
+		if res.err != nil {
+			return res.err
+		}
+	}
+	return nil
 }
 
 const (
@@ -106,18 +149,7 @@ type ReplicationGroup struct {
 	flushedCommandSeq int64
 	epoch             int64
 	responseHolder    atomic.Pointer[responseChanHolder]
-
-	groupState GroupState
 }
-
-type GroupState int
-
-const (
-	GroupStateUninitialised = GroupState(iota)
-	GroupStateLeader
-	GroupStateInvalidFollower
-	GroupStateFollower
-)
 
 func (g *ReplicationGroup) getConnection(address string) (transport.Connection, error) {
 	// FIXME - remove connections when they fail
@@ -161,41 +193,47 @@ type replicationResponse struct {
 	errorCode ErrorCode
 }
 
-func (g *ReplicationGroup) statusChanged(isLeader bool) {
+type flushResult struct {
+	flushedSeq int64
+	err        error
+}
+
+func (g *ReplicationGroup) flush(resultCh chan flushResult) error {
 	g.lock.Lock()
 	defer g.lock.Unlock()
-
+	// FIXME - if flush is successful we send a flush message
+	return g.stateMachine.Flush(func(flushedSeq int64, err error) {
+		resultCh <- flushResult{
+			flushedSeq: flushedSeq,
+			err:        err,
+		}
+	})
 }
 
-func (g *ReplicationGroup) startInitialLeader() {
-	// load any state from permanent storage
+func (g *ReplicationGroup) reset() error {
+	g.lock.Lock()
+	defer g.lock.Unlock()
+	g.commandSeq = 0
+	g.flushedCommandSeq = 0
+	g.epoch = -1
+	return g.stateMachine.Reset()
 }
 
-func (g *ReplicationGroup) joinNewFollower() {
-	// send sync rpc to leader
-	// set flag that waiting for flush
-	// wait for flush message to come from leader
-	// then start keeping state
-}
-
-func (g *ReplicationGroup) promoteFollowerToLeader() {
-	// flush current state
-	// set leader flag to true
-}
-
-func (g *ReplicationGroup) deactivateLeader() {
-	// set flag to deactivate group so returns error if called
+func (g *ReplicationGroup) loadInitialLeaderState() error {
+	g.lock.Lock()
+	defer g.lock.Unlock()
+	commandSeq, err := g.stateMachine.LoadInitialState()
+	if err != nil {
+		return err
+	}
+	g.commandSeq = commandSeq
+	return nil
 }
 
 func (g *ReplicationGroup) applyCommand(command Command) (any, error) {
 	g.lock.Lock()
 	defer g.lock.Unlock()
-	if g.groupState != GroupStateLeader {
-		return nil, &ReplicationError{ErrorCode: ErrorCodeNotLeader}
-	}
-	if len(g.replicator.membership.Members)-1 < g.replicator.minReplications {
-		return nil, &ReplicationError{ErrorCode: ErrorCodeInsufficientFollowers}
-	}
+
 	if err := g.replicateCommand(command); err != nil {
 		return nil, err
 	}
@@ -407,28 +445,96 @@ func (r *Replicator) MembershipChanged(membership cluster.MembershipState) {
 
 func (r *Replicator) membershipChanged(membership cluster.MembershipState) error {
 	r.leader = len(r.membership.Members) > 0 && r.membership.Members[0].Address == r.address
-	//for _, groups := range r.handlerGroups {
-	//	for _, group := range groups {
-	//		group.statusChanged(r.leader)
-	//		if err := group.InitialiseLeader(); err != nil {
-	//			return err
-	//		}
-	//	}
-	//}
+
+	// Note the Membership - will automatically only add itself as member if there are no other members - so only for new
+	// leader - then it will start updating
+	// Then there will be an StartUpdating method on Membership which will add self as follower
+
+	switch r.state {
+	case ReplicaStateUninitialised:
+		if r.leader {
+			// New leader
+			if err := r.initialiseNewLeader(); err != nil {
+				return err
+			}
+		} else {
+			// New follower
+			if err := r.startFollowerJoin(); err != nil {
+				return err
+			}
+		}
+	case ReplicaStateLeader:
+		if !r.leader {
+			// not leader any more
+			if err := r.unmakeLeader(); err != nil {
+				return err
+			}
+		}
+	case ReplicaStateFollower:
+		if r.leader {
+			if err := r.makeLeader(); err != nil {
+				return err
+			}
+		}
+	case ReplicaStateInvalidFollower:
+		// nothing to do
+	default:
+		panic("unknown replicator state")
+	}
+
 	return nil
 }
 
-func (r *Replicator) makeLeader() {
-	// TODO
-	// call all groups to promote to leader
-	// groups need to initialise state, and when they are done they will mark themselves as ready
-
-	// start flush timer
+func (r *Replicator) initialiseNewLeader() error {
+	for _, group := range r.groups {
+		// TODO can be called in parallel
+		if err := group.loadInitialLeaderState(); err != nil {
+			return err
+		}
+	}
+	r.state = ReplicaStateLeader
+	return nil
 }
 
-func (r *Replicator) unmakeLeader() {
+func (r *Replicator) startFollowerJoin() error {
+	// send sync to leader
+	// TODO - how / when to retry this if leader changes?
+	if err := r.sendSyncToLeader(); err != nil {
+		return err
+	}
+	r.state = ReplicaStateInvalidFollower
+	return nil
+}
+
+func (r *Replicator) sendSyncToLeader() error {
 	// TODO
-	// stop flush timer
+	return nil
+}
+
+func (r *Replicator) unmakeLeader() error {
+	// We were leader but have been evicted from the membership.
+	// We need to reset state - if we manage to reconnect we will get a new cluster state and will rejoin
+	r.state = ReplicaStateUninitialised
+	for _, group := range r.groups {
+		// TODO can be called in parallel
+		if err := group.reset(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *Replicator) makeLeader() error {
+	// First trigger a flush
+	if err := r.flushGroups(); err != nil {
+		return err
+	}
+	r.state = ReplicaStateLeader
+	return nil
+}
+
+func (r *Replicator) flushGroups() error {
+	return nil
 }
 
 func (r *Replicator) Start() {
