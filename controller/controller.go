@@ -32,6 +32,6 @@ func (c *Controller) Start() error {
 }
 
 func (c *Controller) Stop() error {
-	c.replicator.Close()
+	c.replicator.Stop()
 	return nil
 }

@@ -67,9 +67,12 @@ type StateMachineFactory func() StateMachine
 type StateMachine interface {
 	NewCommand() (Command, error)
 	UpdateState(command Command, commandSequence int64, lastFlushedSequence int64) (any, error)
-	// Flush is called periodically to signal the handler that it should flush it's state. When it has done so, the
-	// handler must call `completionFunc` with the last flushed sequence
-	Flush(completionFunc func(lastFlushedSequence int64) error) error
+	// Flush is called on the leader to flush persisted state to storage - state must be stored before it returns
+	Flush() error
+	// Flushed is called on the followers to signal that commands up to and including flushedCommandSeq have been flushed
+	Flushed(flushedCommandSeq int64) error
+	// LoadFromFlushedData is called on the
+	LoadFromFlushedData() error
 }
 
 func (r *Replicator) RegisterStateMachineFactory(typ CommandType, factory StateMachineFactory, numGroups int) {
@@ -101,44 +104,37 @@ func (r *Replicator) RegisterStateMachineFactory(typ CommandType, factory StateM
 func (r *Replicator) ApplyCommand(command Command) (any, error) {
 	r.lock.RLock()
 	defer r.lock.RUnlock()
-	if r.membership == nil || !r.leader {
-		return nil, &ReplicationError{Msg: "not leader", ErrorCode: ErrorCodeNotLeader}
-	}
-	if len(r.membership.Members)-1 < r.minReplications {
-		return nil, &ReplicationError{
-			Msg:       "insufficient followers",
-			ErrorCode: ErrorCodeInsufficientFollowers,
-		}
-	}
 	handlerGroups := r.handlerGroups[command.Type()]
 	groupID := command.GroupID(len(handlerGroups))
 	group := handlerGroups[groupID]
-	// FIXME cannot update state machine state until *after* replication, otherwise state can be seen externally
-	// e.g. LSM queries before it's been "committed"
-	res, err := group.stateMachine.UpdateState(command, group.commandSeq, group.flushedCommandSeq)
-	if err != nil {
-		return nil, err
-	}
 	if err := group.replicateCommand(command); err != nil {
 		return nil, err
 	}
-	return res, nil
+	return group.stateMachine.UpdateState(command, group.commandSeq, group.flushedCommandSeq)
 }
 
 func (r *Replicator) MembershipChanged(membership cluster.MembershipState) {
 	r.lock.Lock()
 	defer r.lock.Unlock()
-	r.membership = &membership
-	prevLeader := r.leader
-	r.leader = len(r.membership.Members) > 0 && r.membership.Members[0].Address == r.address
-	if !prevLeader && r.leader {
-		r.promoteToLeader()
-	} else if prevLeader && !r.leader {
-		r.demoteFromLeader()
+	if err := r.membershipChanged(membership); err != nil {
+		log.Errorf("failed to handle membership change: %v", err)
 	}
 }
 
-func (r *Replicator) promoteToLeader() {
+func (r *Replicator) membershipChanged(membership cluster.MembershipState) error {
+	r.leader = len(r.membership.Members) > 0 && r.membership.Members[0].Address == r.address
+	for _, groups := range r.handlerGroups {
+		for _, group := range groups {
+			group.statusChanged(r.leader)
+			if err := group.InitialiseLeader(); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (r *Replicator) makeLeader() {
 	// TODO
 	// call all groups to promote to leader
 	// groups need to initialise state, and when they are done they will mark themselves as ready
@@ -146,12 +142,17 @@ func (r *Replicator) promoteToLeader() {
 	// start flush timer
 }
 
-func (r *Replicator) demoteFromLeader() {
+func (r *Replicator) unmakeLeader() {
 	// TODO
 	// stop flush timer
 }
 
-func (r *Replicator) Close() {
+func (r *Replicator) Start() {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+}
+
+func (r *Replicator) Stop() {
 	r.lock.Lock()
 	defer r.lock.Unlock()
 	for _, groups := range r.handlerGroups {
@@ -193,6 +194,10 @@ type ReplicationGroup struct {
 	flushedCommandSeq int64
 	epoch             int64
 	responseHolder    atomic.Pointer[responseChanHolder]
+
+	initialised bool
+	valid       bool
+	leader      bool
 }
 
 type ErrorCode int16
@@ -203,18 +208,18 @@ const (
 	ErrorCodeLeaderSequenceTooAdvanced
 	ErrorCodeInternalError
 	ErrorCodeNotLeader
+	ErrorCodeLeaderNotInitialised
 	ErrorCodeLeader
 	ErrorCodeInsufficientFollowers
 	ErrorCodeInsufficientReplications
 )
 
 type ReplicationError struct {
-	Msg       string
 	ErrorCode ErrorCode
 }
 
 func (r ReplicationError) Error() string {
-	return fmt.Sprintf("replication error: %d %s", r.ErrorCode, r.Msg)
+	return fmt.Sprintf("replication error: %d %s", r.ErrorCode, r.ErrorCode.String())
 }
 
 func (e ErrorCode) String() string {
@@ -229,6 +234,8 @@ func (e ErrorCode) String() string {
 		return "replica internal error"
 	case ErrorCodeLeader:
 		return "not leader"
+	case ErrorCodeLeaderNotInitialised:
+		return "leader not initialised"
 	case ErrorCodeInsufficientFollowers:
 		return "insufficient followers"
 	case ErrorCodeInsufficientReplications:
@@ -285,9 +292,61 @@ const (
 	networkErrorRetryInterval    = 1 * time.Second
 )
 
+func (r *ReplicationGroup) statusChanged(isLeader bool) {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+
+	if !r.valid {
+		if isLeader {
+			r.startInitialLeader()
+		} else {
+			r.joinNewFollower()
+		}
+	} else {
+		if isLeader {
+			if !r.leader {
+				r.promoteFollowerToLeader()
+			}
+		} else {
+			if r.leader {
+				r.deactivateLeader()
+			}
+		}
+	}
+}
+
+func (r *ReplicationGroup) startInitialLeader() {
+	// load any state from permanent storage
+}
+
+func (r *ReplicationGroup) joinNewFollower() {
+	// send sync rpc to leader
+	// set flag that waiting for flush
+	// wait for flush message to come from leader
+	// then start keeping state
+}
+
+func (r *ReplicationGroup) promoteFollowerToLeader() {
+	// flush current state
+	// set leader flag to true
+}
+
+func (r *ReplicationGroup) deactivateLeader() {
+	// set flag to deactivate group so returns error if called
+}
+
 func (r *ReplicationGroup) replicateCommand(command Command) error {
 	r.lock.Lock()
 	defer r.lock.Unlock()
+	if r.replicator.membership == nil || !r.replicator.leader {
+		return &ReplicationError{ErrorCode: ErrorCodeNotLeader}
+	}
+	if !r.initialised {
+		return &ReplicationError{ErrorCode: ErrorCodeLeaderNotInitialised}
+	}
+	if len(r.replicator.membership.Members)-1 < r.replicator.minReplications {
+		return &ReplicationError{ErrorCode: ErrorCodeInsufficientFollowers}
+	}
 	buff := make([]byte, 0, 64)
 	buff = binary.BigEndian.AppendUint16(buff, uint16(r.commandType))
 	buff = binary.BigEndian.AppendUint64(buff, uint64(r.id))
@@ -319,10 +378,7 @@ func (r *ReplicationGroup) replicateCommand(command Command) error {
 		}
 	}
 	if len(sentFollowers) < r.replicator.minReplications {
-		return &ReplicationError{
-			Msg:       "failed to replicate to sufficient followers",
-			ErrorCode: ErrorCodeInsufficientReplications,
-		}
+		return &ReplicationError{ErrorCode: ErrorCodeInsufficientReplications}
 	}
 	// TODO should we check received addresses???
 	var successes int

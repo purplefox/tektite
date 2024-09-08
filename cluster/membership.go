@@ -18,6 +18,7 @@ type Membership struct {
 	address                   string
 	currentState              MembershipState
 	membershipChangedCallback func(state MembershipState)
+	sentFirstUpdate           bool
 }
 
 func NewMembership(bucket string, keyPrefix string, address string, objStoreClient objstore.Client, updateInterval time.Duration,
@@ -71,15 +72,26 @@ func (m *Membership) updateOnTimer() {
 }
 
 func (m *Membership) update() error {
-	prevEpoch := m.currentState.Epoch
 	newState, err := m.stateMachine.Update(m.updateState)
 	if err != nil {
 		return err
 	}
+	same := true
+	if len(newState.Members) == len(m.currentState.Members) {
+		for i, member := range m.currentState.Members {
+			if member.Address != m.currentState.Members[i].Address {
+				same = false
+				break
+			}
+		}
+	} else {
+		same = false
+	}
 	m.currentState = newState
-	if prevEpoch != newState.Epoch {
+	if !same || !m.sentFirstUpdate {
 		m.membershipChangedCallback(newState)
 	}
+	m.sentFirstUpdate = true
 	return nil
 }
 
@@ -89,8 +101,8 @@ func (m *Membership) updateState(memberShipState MembershipState) (MembershipSta
 	found := false
 	var newState MembershipState
 	var newMembers []MembershipEntry
-	changed := false
-	for _, member := range memberShipState.Members {
+	leaderChanged := len(memberShipState.Members) == 0
+	for i, member := range memberShipState.Members {
 		if member.Address == m.address {
 			// When we update we preserve position in the slice
 			member.UpdateTime = now
@@ -98,7 +110,9 @@ func (m *Membership) updateState(memberShipState MembershipState) (MembershipSta
 		} else {
 			if now-member.UpdateTime >= m.evictionInterval.Milliseconds() {
 				// member evicted
-				changed = true
+				if i == 0 {
+					leaderChanged = true
+				}
 				continue
 			}
 		}
@@ -109,12 +123,11 @@ func (m *Membership) updateState(memberShipState MembershipState) (MembershipSta
 			Address:    m.address,
 			UpdateTime: now,
 		})
-		changed = true
 	}
 	newState.Members = newMembers
 	newState.Epoch = memberShipState.Epoch
-	if changed {
-		// New member joined or member(s) where evicted, so we change the epoch
+	if leaderChanged {
+		// Leader changed we increment the epoch
 		newState.Epoch++
 	}
 	return newState, nil
