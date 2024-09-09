@@ -48,6 +48,9 @@ type ReplicatorOpts struct {
 
 const (
 	DefaultFlushInterval = 5 * time.Second
+
+	// FIXME - but this in opts
+	SyncRetryInterval = 5 * time.Second
 )
 
 func NewReplicator(transport transport.Transport, replicationFactor int, address string, memberFailedFunc func(string),
@@ -83,6 +86,7 @@ type Replicator struct {
 	state             ReplicaState
 	syncedGroups      int64
 	syncingFollowers  []string
+	syncTimer         *time.Timer
 }
 
 type ReplicaState int
@@ -210,12 +214,30 @@ func (r *Replicator) membershipChanged(membership cluster.MembershipState) error
 			if err := r.unmakeLeader(); err != nil {
 				return err
 			}
+		} else {
+			// Update syncing members - they might have become followers
+			var newSyncing []string
+			for _, syncing := range r.syncingFollowers {
+				isMember := false
+				for _, member := range r.membership.Members {
+					if member.Address == syncing {
+						// Syncing follower is now in group
+						isMember = true
+						break
+					}
+				}
+				if !isMember {
+					newSyncing = append(newSyncing, syncing)
+				}
+			}
+			r.syncingFollowers = newSyncing
 		}
 	case ReplicaStateFollower:
 		if r.leader {
 			if err := r.makeLeader(); err != nil {
 				return err
 			}
+			r.syncingFollowers = nil
 		}
 	case ReplicaStateInvalidFollower:
 		// nothing to do
@@ -238,16 +260,11 @@ func (r *Replicator) initialiseNewLeader() error {
 
 func (r *Replicator) startFollowerJoin() error {
 	// send sync to leader
-	// TODO - how / when to retry this if leader changes?
-	if err := r.sendSyncToLeader(); err != nil {
-		return err
-	}
 	r.state = ReplicaStateInvalidFollower
-	return nil
-}
-
-func (r *Replicator) sendSyncToLeader() error {
-	// TODO
+	for _, group := range r.groups {
+		group.setUnsyncedFollower()
+	}
+	r.sendSyncToLeader()
 	return nil
 }
 
@@ -261,6 +278,7 @@ func (r *Replicator) unmakeLeader() error {
 			return err
 		}
 	}
+	r.syncingFollowers = nil
 	return nil
 }
 
@@ -291,6 +309,9 @@ func (r *Replicator) Stop() {
 	}
 	r.started = false
 	r.flushTimer.Stop()
+	if r.syncTimer != nil {
+		r.syncTimer.Stop()
+	}
 	for _, group := range r.groups {
 		group.Close()
 	}
@@ -310,12 +331,113 @@ func (r *Replicator) GetGroups() map[int]*ReplicationGroup {
 func (r *Replicator) handleRequest(message []byte, responseWriter transport.ResponseHandler) error {
 	r.lock.RLock()
 	defer r.lock.RUnlock()
+	// TODO version this protocol
+	isSync := message[0] == 1
+	if isSync {
+		return r.handleSyncRequest(message[1:], responseWriter)
+	}
 	groupID := int(binary.BigEndian.Uint64(message))
 	group, ok := r.groups[groupID]
 	if !ok {
 		return errors.Errorf("group with id %d not found", groupID)
 	}
 	return group.handleRequest(message[8:], responseWriter)
+}
+
+func (r *Replicator) handleSyncRequest(message []byte, responseWriter transport.ResponseHandler) error {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+	epoch := int(binary.BigEndian.Uint64(message))
+	l := binary.BigEndian.Uint16(message[8:])
+	address := string(message[10 : 10+int(l)])
+	var errorCode ErrorCode
+	if r.membership.Epoch != epoch {
+		errorCode = ErrorCodeInvalidEpoch
+	} else if r.state != ReplicaStateLeader {
+		errorCode = ErrorCodeNotLeader
+	} else {
+		isMember := false
+		for _, member := range r.membership.Members {
+			if address == member.Address {
+				isMember = true
+			}
+		}
+		if isMember {
+			errorCode = ErrorCodeSyncingFollowerIsMember
+		} else {
+			// Sync can be retried on temporary network failure so there can be duplicates
+			alreadySyncing := false
+			for _, syncing := range r.syncingFollowers {
+				if address == syncing {
+					alreadySyncing = true
+					break
+				}
+			}
+			if !alreadySyncing {
+				r.syncingFollowers = append(r.syncingFollowers, address)
+			}
+			errorCode = ErrorCodeNode
+		}
+	}
+	resp := binary.BigEndian.AppendUint16(nil, uint16(errorCode))
+	return responseWriter(resp)
+}
+
+func (r *Replicator) sendSyncToLeader() {
+	if err := r.syncWithLeader(); err != nil {
+		// Can happen if leader changes
+		log.Warnf("failed to send sync to leader: %v - will retry", err)
+		// Retry after delay
+		r.scheduleSync()
+	}
+}
+
+func (r *Replicator) scheduleSync() {
+	r.syncTimer = time.AfterFunc(SyncRetryInterval, func() {
+		r.lock.Lock()
+		defer r.lock.Unlock()
+		if !r.started {
+			return
+		}
+		r.sendSyncToLeader()
+	})
+}
+
+func (r *Replicator) syncWithLeader() error {
+	leader := r.membership.Members[0].Address
+	// FIXME close connection
+	conn, err := r.transport.CreateConnection(leader, func(message []byte) error {
+		if len(message) != 2 {
+			return errors.New("invalid sync response")
+		}
+		errorCode := ErrorCode(binary.BigEndian.Uint16(message))
+		r.handleSyncResponse(errorCode)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	buff := make([]byte, 0, 1+8+2+len(r.address))
+	buff = append(buff, 1) // sync
+	buff = binary.BigEndian.AppendUint64(buff, uint64(r.membership.Epoch))
+	buff = binary.BigEndian.AppendUint16(buff, uint16(len(r.address))) // address
+	buff = append(buff, r.address...)
+	return conn.WriteMessage(buff)
+}
+
+func (r *Replicator) handleSyncResponse(errorCode ErrorCode) {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+	if r.state != ReplicaStateInvalidFollower {
+		log.Errorf("got sync response but invalid state: %d", r.state)
+		return
+	}
+	if errorCode == ErrorCodeNode {
+		return
+	}
+	// reschedule
+	log.Warnf("got error from sync with leader: %s", errorCode.String())
+	r.scheduleSync()
 }
 
 const (
@@ -335,6 +457,12 @@ type ReplicationGroup struct {
 	epoch             int64
 	responseHolder    atomic.Pointer[responseChanHolder]
 	unsyncedFollower  bool
+}
+
+func (g *ReplicationGroup) setUnsyncedFollower() {
+	g.lock.Lock()
+	defer g.lock.Unlock()
+	g.unsyncedFollower = true
 }
 
 func (g *ReplicationGroup) getConnection(address string) (transport.Connection, error) {
@@ -472,15 +600,21 @@ func (g *ReplicationGroup) replicateCommand(command Command, isFlush bool) error
 	}
 	members := g.replicator.membership.Members
 	followers := members[1:]
+
+	replicateAddresses := make([]string, 0, len(followers)+len(g.replicator.syncingFollowers))
+	for _, follower := range followers {
+		replicateAddresses = append(replicateAddresses, follower.Address)
+	}
+	replicateAddresses = append(replicateAddresses, g.replicator.syncingFollowers...)
+
 	respHolder := &responseChanHolder{
 		commandSequence: g.commandSeq,
-		ch:              make(chan replicationResponse, len(followers)),
+		ch:              make(chan replicationResponse, len(replicateAddresses)),
 	}
 	g.commandSeq++
 	g.responseHolder.Store(respHolder)
-	sentFollowers := make([]string, 0, len(followers))
-	for _, follower := range followers {
-		address := follower.Address
+	sentFollowers := make([]string, 0, len(replicateAddresses))
+	for _, address := range replicateAddresses {
 		conn, err := g.getConnection(address)
 		if err != nil {
 			return err
@@ -570,6 +704,9 @@ func (g *ReplicationGroup) handleRequest(message []byte, responseWriter transpor
 			if err := g.stateMachine.Initialise(commandSeq); err != nil {
 				return err
 			}
+			// Now we are synced
+			g.commandSeq = commandSeq
+			g.unsyncedFollower = false
 			if int(atomic.AddInt64(&g.replicator.syncedGroups, 1)) == len(g.replicator.groups) {
 				// We have received a flush on each group, so we are fully synced as a follower and can add ourself
 				// to the membership group
@@ -582,13 +719,16 @@ func (g *ReplicationGroup) handleRequest(message []byte, responseWriter transpor
 			}
 		}
 	} else {
-		command, err := g.createCommand(message[17:])
-		if err != nil {
-			return err
-		}
-		_, err = g.stateMachine.UpdateState(command, commandSeq)
-		if err != nil {
-			return err
+		// Invalid replicas ignore commands until they see a flush
+		if !g.unsyncedFollower {
+			command, err := g.createCommand(message[17:])
+			if err != nil {
+				return err
+			}
+			_, err = g.stateMachine.UpdateState(command, commandSeq)
+			if err != nil {
+				return err
+			}
 		}
 	}
 	return g.writeReplicationResponse(ErrorCodeNode, commandSeq, responseWriter)
@@ -634,6 +774,7 @@ const (
 	ErrorCodeLeader
 	ErrorCodeInsufficientFollowers
 	ErrorCodeInsufficientReplications
+	ErrorCodeSyncingFollowerIsMember
 )
 
 type ReplicationError struct {
@@ -654,14 +795,18 @@ func (e ErrorCode) String() string {
 		return "leader sequence too advanced"
 	case ErrorCodeInternalError:
 		return "replica internal error"
-	case ErrorCodeLeader:
-		return "not leader"
+	case ErrorCodeNotLeader:
+		return "replica is not leader"
 	case ErrorCodeLeaderNotInitialised:
 		return "leader not initialised"
+	case ErrorCodeLeader:
+		return "replica is leader"
 	case ErrorCodeInsufficientFollowers:
 		return "insufficient followers"
 	case ErrorCodeInsufficientReplications:
 		return "insufficient replications"
+	case ErrorCodeSyncingFollowerIsMember:
+		return "syncing follower is member"
 	default:
 		panic("unknown replicator code")
 	}
