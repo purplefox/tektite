@@ -8,6 +8,7 @@ import (
 	"github.com/spirit-labs/tektite/cluster"
 	log "github.com/spirit-labs/tektite/logger"
 	"github.com/spirit-labs/tektite/transport"
+	"github.com/timandy/routine"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -41,13 +42,26 @@ type Command interface {
 	Deserialize(buff []byte) ([]byte, error)
 }
 
-func NewReplicator(transport transport.Transport, replicationFactor int, address string, memberFailedFunc func(string)) *Replicator {
+type ReplicatorOpts struct {
+	FlushInterval time.Duration
+}
+
+const (
+	DefaultFlushInterval = 5 * time.Second
+)
+
+func NewReplicator(transport transport.Transport, replicationFactor int, address string, memberFailedFunc func(string),
+	opts ReplicatorOpts) *Replicator {
+	if opts.FlushInterval == 0 {
+		opts.FlushInterval = DefaultFlushInterval
+	}
 	r := &Replicator{
 		transport:         transport,
 		address:           address,
 		replicationFactor: replicationFactor,
 		minReplications:   (replicationFactor + 1) / 2,
 		memberFailedFunc:  memberFailedFunc,
+		opts:              opts,
 	}
 	transport.RegisterHandler(r.handleRequest)
 	return r
@@ -55,15 +69,19 @@ func NewReplicator(transport transport.Transport, replicationFactor int, address
 
 type Replicator struct {
 	lock              sync.RWMutex
+	started           bool
 	address           string
 	transport         transport.Transport
 	replicationFactor int
 	minReplications   int
 	memberFailedFunc  func(string)
+	opts              ReplicatorOpts
 	groups            map[int]*ReplicationGroup
+	flushTimer        *time.Timer
 	membership        *cluster.MembershipState
 	leader            bool
 	state             ReplicaState
+	syncedGroups      int64
 	syncingFollowers  []string
 }
 
@@ -112,9 +130,27 @@ func (r *Replicator) ApplyCommand(command Command, groupID int) (any, error) {
 	return group.applyCommand(command)
 }
 
+func (r *Replicator) scheduleFlush() {
+	r.flushTimer = time.AfterFunc(r.opts.FlushInterval, func() {
+		r.lock.Lock()
+		defer r.lock.Unlock()
+		if !r.started {
+			return
+		}
+		if err := r.flush(); err != nil {
+			log.Errorf("Error flushing replication groups: %v", err)
+		}
+		r.scheduleFlush()
+	})
+}
+
 func (r *Replicator) Flush() error {
 	r.lock.RLock()
 	defer r.lock.RUnlock()
+	return r.flush()
+}
+
+func (r *Replicator) flush() error {
 	if r.state != ReplicaStateLeader {
 		return nil
 	}
@@ -133,6 +169,155 @@ func (r *Replicator) Flush() error {
 	return nil
 }
 
+func (r *Replicator) ReceiveSyncRequest(address string) error {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+	r.syncingFollowers = append(r.syncingFollowers, address)
+	// TODO - maybe flush straight away to avoid waiting for timer?
+	return nil
+}
+
+func (r *Replicator) MembershipChanged(membership cluster.MembershipState) {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+	if err := r.membershipChanged(membership); err != nil {
+		log.Errorf("failed to handle membership change: %v", err)
+	}
+}
+
+func (r *Replicator) membershipChanged(membership cluster.MembershipState) error {
+	r.membership = &membership
+	r.leader = len(r.membership.Members) > 0 && r.membership.Members[0].Address == r.address
+	// Note the Membership - will automatically only add itself as member if there are no other members - so only for new
+	// leader - then it will start updating
+	// Then there will be an StartUpdating method on Membership which will add self as follower
+	switch r.state {
+	case ReplicaStateUninitialised:
+		if r.leader {
+			// New leader
+			if err := r.initialiseNewLeader(); err != nil {
+				return err
+			}
+		} else {
+			// New follower
+			if err := r.startFollowerJoin(); err != nil {
+				return err
+			}
+		}
+	case ReplicaStateLeader:
+		if !r.leader {
+			// not leader any more
+			if err := r.unmakeLeader(); err != nil {
+				return err
+			}
+		}
+	case ReplicaStateFollower:
+		if r.leader {
+			if err := r.makeLeader(); err != nil {
+				return err
+			}
+		}
+	case ReplicaStateInvalidFollower:
+		// nothing to do
+	default:
+		panic("unknown replicator state")
+	}
+	return nil
+}
+
+func (r *Replicator) initialiseNewLeader() error {
+	for _, group := range r.groups {
+		// TODO can be called in parallel
+		if err := group.loadInitialLeaderState(); err != nil {
+			return err
+		}
+	}
+	r.state = ReplicaStateLeader
+	return nil
+}
+
+func (r *Replicator) startFollowerJoin() error {
+	// send sync to leader
+	// TODO - how / when to retry this if leader changes?
+	if err := r.sendSyncToLeader(); err != nil {
+		return err
+	}
+	r.state = ReplicaStateInvalidFollower
+	return nil
+}
+
+func (r *Replicator) sendSyncToLeader() error {
+	// TODO
+	return nil
+}
+
+func (r *Replicator) unmakeLeader() error {
+	// We were leader but have been evicted from the membership.
+	// We need to reset state - if we manage to reconnect we will get a new cluster state and will rejoin
+	r.state = ReplicaStateUninitialised
+	for _, group := range r.groups {
+		// TODO can be called in parallel
+		if err := group.reset(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *Replicator) makeLeader() error {
+	r.state = ReplicaStateLeader
+	return nil
+}
+func (r *Replicator) allGroupsSynced() {
+	// TODO add self to Membership
+	r.state = ReplicaStateFollower
+}
+
+func (r *Replicator) Start() {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+	if r.started {
+		return
+	}
+	r.scheduleFlush()
+	r.started = true
+}
+
+func (r *Replicator) Stop() {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+	if !r.started {
+		return
+	}
+	r.started = false
+	r.flushTimer.Stop()
+	for _, group := range r.groups {
+		group.Close()
+	}
+	r.groups = map[int]*ReplicationGroup{}
+}
+
+func (r *Replicator) GetGroups() map[int]*ReplicationGroup {
+	r.lock.RLock()
+	defer r.lock.RUnlock()
+	groupsCopy := make(map[int]*ReplicationGroup, len(r.groups))
+	for id, group := range r.groups {
+		groupsCopy[id] = group
+	}
+	return groupsCopy
+}
+
+func (r *Replicator) handleRequest(message []byte, responseWriter transport.ResponseHandler) error {
+	r.lock.RLock()
+	defer r.lock.RUnlock()
+	groupID := int(binary.BigEndian.Uint64(message))
+	group, ok := r.groups[groupID]
+	if !ok {
+		return errors.Errorf("group with id %d not found", groupID)
+	}
+	return group.handleRequest(message[8:], responseWriter)
+}
+
 const (
 	replicateTimeout             = 5 * time.Second
 	networkErrorMaxRetryDuration = 10 * time.Second
@@ -149,6 +334,7 @@ type ReplicationGroup struct {
 	flushedCommandSeq int64
 	epoch             int64
 	responseHolder    atomic.Pointer[responseChanHolder]
+	unsyncedFollower  bool
 }
 
 func (g *ReplicationGroup) getConnection(address string) (transport.Connection, error) {
@@ -201,11 +387,29 @@ type flushResult struct {
 func (g *ReplicationGroup) flush(resultCh chan flushResult) error {
 	g.lock.Lock()
 	defer g.lock.Unlock()
-	// FIXME - if flush is successful we send a flush message
+	goID := routine.Goid()
 	return g.stateMachine.Flush(func(flushedSeq int64, err error) {
-		resultCh <- flushResult{
-			flushedSeq: flushedSeq,
-			err:        err,
+		if err != nil {
+			resultCh <- flushResult{
+				err: err,
+			}
+		} else {
+			if goID != routine.Goid() {
+				// Different goroutine, so need to lock
+				g.lock.Lock()
+				defer g.lock.Unlock()
+			}
+			g.flushedCommandSeq = flushedSeq
+			// Send a flushed message
+			if err := g.replicateCommand(nil, true); err != nil {
+				resultCh <- flushResult{
+					err: err,
+				}
+			} else {
+				resultCh <- flushResult{
+					flushedSeq: flushedSeq,
+				}
+			}
 		}
 	})
 }
@@ -233,8 +437,7 @@ func (g *ReplicationGroup) loadInitialLeaderState() error {
 func (g *ReplicationGroup) applyCommand(command Command) (any, error) {
 	g.lock.Lock()
 	defer g.lock.Unlock()
-
-	if err := g.replicateCommand(command); err != nil {
+	if err := g.replicateCommand(command, false); err != nil {
 		return nil, err
 	}
 	res, err := g.stateMachine.UpdateState(command, g.commandSeq)
@@ -245,18 +448,27 @@ func (g *ReplicationGroup) applyCommand(command Command) (any, error) {
 	return res, nil
 }
 
-func (g *ReplicationGroup) replicateCommand(command Command) error {
-	g.lock.Lock()
-	defer g.lock.Unlock()
-	// TODO this must be two phase
-
+func (g *ReplicationGroup) replicateCommand(command Command, isFlush bool) error {
+	// FIXME this must be two phase
 	buff := make([]byte, 0, 64)
 	buff = binary.BigEndian.AppendUint64(buff, uint64(g.id))
-	buff = binary.BigEndian.AppendUint64(buff, uint64(g.commandSeq))
+	if isFlush {
+		buff = append(buff, byte(1))
+	} else {
+		buff = append(buff, byte(0))
+	}
+	if isFlush {
+		buff = binary.BigEndian.AppendUint64(buff, uint64(g.flushedCommandSeq))
+	} else {
+		buff = binary.BigEndian.AppendUint64(buff, uint64(g.commandSeq))
+	}
 	buff = binary.BigEndian.AppendUint64(buff, uint64(g.epoch))
-	buff, err := command.Serialize(buff)
-	if err != nil {
-		return err
+	if buff != nil {
+		var err error
+		buff, err = command.Serialize(buff)
+		if err != nil {
+			return err
+		}
 	}
 	members := g.replicator.membership.Members
 	followers := members[1:]
@@ -325,9 +537,9 @@ func (g *ReplicationGroup) sendReplicationWithRetry(conn transport.Connection, a
 }
 
 func (g *ReplicationGroup) handleRequest(message []byte, responseWriter transport.ResponseHandler) error {
-	commandSeq := int64(binary.BigEndian.Uint64(message))
-	epoch := int64(binary.BigEndian.Uint64(message[8:]))
-
+	isFlush := message[0] == 1
+	commandSeq := int64(binary.BigEndian.Uint64(message[1:]))
+	epoch := int64(binary.BigEndian.Uint64(message[9:]))
 	if g.replicator.leader {
 		log.Warnf("replication arrived at leader: %s", g.replicator.address)
 		return g.writeReplicationResponse(ErrorCodeLeader, commandSeq, responseWriter)
@@ -351,13 +563,33 @@ func (g *ReplicationGroup) handleRequest(message []byte, responseWriter transpor
 			g.epoch)
 		return g.writeReplicationResponse(ErrorCodeInvalidEpoch, commandSeq, responseWriter)
 	}
-	command, err := g.createCommand(message[16:])
-	if err != nil {
-		return err
-	}
-	_, err = g.stateMachine.UpdateState(command, commandSeq)
-	if err != nil {
-		return err
+	if isFlush {
+		if g.unsyncedFollower {
+			// We are a new follower waiting for a flush
+			// The new follower can now load state from the flushed sequence
+			if err := g.stateMachine.Initialise(commandSeq); err != nil {
+				return err
+			}
+			if int(atomic.AddInt64(&g.replicator.syncedGroups, 1)) == len(g.replicator.groups) {
+				// We have received a flush on each group, so we are fully synced as a follower and can add ourself
+				// to the membership group
+				g.replicator.allGroupsSynced()
+			}
+		} else {
+			// Tell the state machine that it can flush any data <= commandSeq
+			if err := g.stateMachine.Flushed(commandSeq); err != nil {
+				return err
+			}
+		}
+	} else {
+		command, err := g.createCommand(message[17:])
+		if err != nil {
+			return err
+		}
+		_, err = g.stateMachine.UpdateState(command, commandSeq)
+		if err != nil {
+			return err
+		}
 	}
 	return g.writeReplicationResponse(ErrorCodeNode, commandSeq, responseWriter)
 }
@@ -433,141 +665,4 @@ func (e ErrorCode) String() string {
 	default:
 		panic("unknown replicator code")
 	}
-}
-
-func (r *Replicator) MembershipChanged(membership cluster.MembershipState) {
-	r.lock.Lock()
-	defer r.lock.Unlock()
-	if err := r.membershipChanged(membership); err != nil {
-		log.Errorf("failed to handle membership change: %v", err)
-	}
-}
-
-func (r *Replicator) membershipChanged(membership cluster.MembershipState) error {
-	r.leader = len(r.membership.Members) > 0 && r.membership.Members[0].Address == r.address
-
-	// Note the Membership - will automatically only add itself as member if there are no other members - so only for new
-	// leader - then it will start updating
-	// Then there will be an StartUpdating method on Membership which will add self as follower
-
-	switch r.state {
-	case ReplicaStateUninitialised:
-		if r.leader {
-			// New leader
-			if err := r.initialiseNewLeader(); err != nil {
-				return err
-			}
-		} else {
-			// New follower
-			if err := r.startFollowerJoin(); err != nil {
-				return err
-			}
-		}
-	case ReplicaStateLeader:
-		if !r.leader {
-			// not leader any more
-			if err := r.unmakeLeader(); err != nil {
-				return err
-			}
-		}
-	case ReplicaStateFollower:
-		if r.leader {
-			if err := r.makeLeader(); err != nil {
-				return err
-			}
-		}
-	case ReplicaStateInvalidFollower:
-		// nothing to do
-	default:
-		panic("unknown replicator state")
-	}
-
-	return nil
-}
-
-func (r *Replicator) initialiseNewLeader() error {
-	for _, group := range r.groups {
-		// TODO can be called in parallel
-		if err := group.loadInitialLeaderState(); err != nil {
-			return err
-		}
-	}
-	r.state = ReplicaStateLeader
-	return nil
-}
-
-func (r *Replicator) startFollowerJoin() error {
-	// send sync to leader
-	// TODO - how / when to retry this if leader changes?
-	if err := r.sendSyncToLeader(); err != nil {
-		return err
-	}
-	r.state = ReplicaStateInvalidFollower
-	return nil
-}
-
-func (r *Replicator) sendSyncToLeader() error {
-	// TODO
-	return nil
-}
-
-func (r *Replicator) unmakeLeader() error {
-	// We were leader but have been evicted from the membership.
-	// We need to reset state - if we manage to reconnect we will get a new cluster state and will rejoin
-	r.state = ReplicaStateUninitialised
-	for _, group := range r.groups {
-		// TODO can be called in parallel
-		if err := group.reset(); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (r *Replicator) makeLeader() error {
-	// First trigger a flush
-	if err := r.flushGroups(); err != nil {
-		return err
-	}
-	r.state = ReplicaStateLeader
-	return nil
-}
-
-func (r *Replicator) flushGroups() error {
-	return nil
-}
-
-func (r *Replicator) Start() {
-	r.lock.Lock()
-	defer r.lock.Unlock()
-}
-
-func (r *Replicator) Stop() {
-	r.lock.Lock()
-	defer r.lock.Unlock()
-	for _, group := range r.groups {
-		group.Close()
-	}
-	r.groups = map[int]*ReplicationGroup{}
-}
-
-func (r *Replicator) GetGroups() map[int]*ReplicationGroup {
-	r.lock.RLock()
-	defer r.lock.RUnlock()
-	groupsCopy := make(map[int]*ReplicationGroup, len(r.groups))
-	for id, group := range r.groups {
-		groupsCopy[id] = group
-	}
-	return groupsCopy
-}
-
-func (r *Replicator) handleRequest(message []byte, responseWriter transport.ResponseHandler) error {
-	r.lock.RLock()
-	defer r.lock.RUnlock()
-	groupID := int(binary.BigEndian.Uint64(message))
-	group, ok := r.groups[groupID]
-	if !ok {
-		return errors.Errorf("group with id %d not found", groupID)
-	}
-	return group.handleRequest(message[8:], responseWriter)
 }
