@@ -19,6 +19,7 @@ type Membership struct {
 	currentState              MembershipState
 	membershipChangedCallback func(state MembershipState)
 	sentFirstUpdate           bool
+	valid                     bool
 }
 
 func NewMembership(bucket string, keyPrefix string, address string, objStoreClient objstore.Client, updateInterval time.Duration,
@@ -53,6 +54,12 @@ func (m *Membership) Stop() {
 	m.started = false
 	m.updateTimer.Stop()
 	m.stateMachine.Stop()
+}
+
+func (m *Membership) SetValid(valid bool) {
+	m.lock.Lock()
+	defer m.lock.Unlock()
+	m.valid = valid
 }
 
 func (m *Membership) scheduleTimer() {
@@ -97,6 +104,10 @@ func (m *Membership) update() error {
 
 // membershipState is immutable
 func (m *Membership) updateState(memberShipState MembershipState) (MembershipState, error) {
+	if !m.valid && len(memberShipState.Members) >= 0 {
+		// We only update our entry if we are valid, or we're the first member and will become leader
+		return memberShipState, nil
+	}
 	now := time.Now().UnixMilli()
 	found := false
 	var newState MembershipState
