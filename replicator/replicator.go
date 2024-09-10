@@ -58,7 +58,7 @@ type membership interface {
 	MemberFailed(address string)
 }
 
-type membershipFactory func(membershipChangedHandler func(state cluster.MembershipState) error) membership
+type membershipFactory func(address string, membershipChangedHandler func(state cluster.MembershipState) error) membership
 
 func NewReplicator(transport transport.Transport, replicationFactor int, address string,
 	membershipFactory membershipFactory, opts ReplicatorOpts) *Replicator {
@@ -71,8 +71,9 @@ func NewReplicator(transport transport.Transport, replicationFactor int, address
 		replicationFactor: replicationFactor,
 		minReplications:   (replicationFactor + 1) / 2,
 		opts:              opts,
+		groups:            map[int]*ReplicationGroup{},
 	}
-	mShip := membershipFactory(r.membershipChanged)
+	mShip := membershipFactory(address, r.membershipChanged)
 	r.membership = mShip
 	transport.RegisterHandler(r.handleRequest)
 	return r
@@ -192,6 +193,9 @@ func (r *Replicator) ReceiveSyncRequest(address string) error {
 func (r *Replicator) MembershipChanged(membership cluster.MembershipState) {
 	r.lock.Lock()
 	defer r.lock.Unlock()
+	if !r.started {
+		return
+	}
 	if err := r.membershipChanged(membership); err != nil {
 		log.Errorf("failed to handle membershipState change: %v", err)
 	}

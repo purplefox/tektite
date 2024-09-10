@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"github.com/google/uuid"
 	"github.com/spirit-labs/tektite/cluster"
-	log "github.com/spirit-labs/tektite/logger"
 	"github.com/spirit-labs/tektite/transport"
 	"github.com/stretchr/testify/require"
 	"sync"
@@ -37,17 +36,18 @@ func TestReplicator(t *testing.T) {
 		Epoch: 1,
 	}
 
+	memberships := newTestMemberships()
+
 	for i := 0; i < numReplicas; i++ {
 		address := uuid.New().String()
 		initialState.Members = append(initialState.Members, cluster.MembershipEntry{Address: address})
 		trans, err := localTransports.NewLocalTransport(address)
 		require.NoError(t, err)
-		replicator := NewReplicator(trans, numReplicas, address, func(s string) {
-		})
-		replicator.RegisterStateMachineFactory(testCommandType, func() StateMachine {
-			return &testCommandHandler{}
-		}, numGroups)
+		replicator := NewReplicator(trans, numReplicas, address, memberships.createMembership, ReplicatorOpts{})
+		err = replicator.CreateGroup(1, &testStateMachine{})
+		require.NoError(t, err)
 		replicators[i] = replicator
+		replicator.Start()
 	}
 
 	command := &testCommand{
@@ -55,18 +55,17 @@ func TestReplicator(t *testing.T) {
 	}
 
 	// Apply the initial cluster state
-	for i := 0; i < numReplicas; i++ {
-		replicators[i].MembershipChanged(initialState)
-	}
+	err := memberships.sendUpdate(initialState)
+	require.NoError(t, err)
 
-	_, err := replicators[0].ApplyCommand(command)
+	_, err = replicators[0].ApplyCommand(command, 1)
 
 	for i := 0; i < numReplicas; i++ {
-		groups := replicators[i].GetGroups(testCommandType)
+		groups := replicators[i].GetGroups()
 		require.Equal(t, numGroups, len(groups))
 		group := groups[0]
 		require.NotNil(t, group)
-		handler := group.stateMachine.(*testCommandHandler)
+		handler := group.stateMachine.(*testStateMachine)
 		commands := handler.getCommands()
 		require.Equal(t, 1, len(commands))
 		require.Equal(t, command, commands[0])
@@ -75,16 +74,86 @@ func TestReplicator(t *testing.T) {
 	require.NoError(t, err)
 }
 
-type testCommandHandler struct {
+type testMemberships struct {
+	lock        sync.Mutex
+	memberships map[string]*testMembership
+}
+
+func newTestMemberships() *testMemberships {
+	return &testMemberships{
+		memberships: make(map[string]*testMembership),
+	}
+}
+
+func (t *testMemberships) sendUpdate(state cluster.MembershipState) error {
+	t.lock.Lock()
+	defer t.lock.Unlock()
+	for _, membership := range t.memberships {
+		if err := membership.membershipChangedHandler(state); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (t *testMemberships) createMembership(address string,
+	membershipChangedHandler func(state cluster.MembershipState) error) membership {
+	t.lock.Lock()
+	defer t.lock.Unlock()
+	ms := &testMembership{
+		membershipChangedHandler: membershipChangedHandler,
+	}
+	t.memberships[address] = ms
+	return ms
+}
+
+type testMembership struct {
+	membershipChangedHandler func(state cluster.MembershipState) error
+}
+
+func (t *testMembership) SetValid(valid bool) {
+}
+
+func (t *testMembership) MemberFailed(address string) {
+}
+
+type testStateMachine struct {
 	lock     sync.Mutex
 	commands []Command
 }
 
-func (t *testCommandHandler) HandleLeader(command Command) (any, error) {
+func (t *testStateMachine) LoadInitialState() (int64, error) {
+	return 0, nil
+}
+
+func (t *testStateMachine) UpdateState(command Command, commandSequence int64) (any, error) {
+	t.lock.Lock()
+	defer t.lock.Unlock()
+	t.commands = append(t.commands, command)
 	return nil, nil
 }
 
-func (t *testCommandHandler) getCommands() []Command {
+func (t *testStateMachine) Flush(flushCompleted func(flushedSequence int64, err error)) error {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (t *testStateMachine) Flushed(flushedCommandSeq int64) error {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (t *testStateMachine) Initialise(commandSequence int64) error {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (t *testStateMachine) Reset() error {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (t *testStateMachine) getCommands() []Command {
 	t.lock.Lock()
 	defer t.lock.Unlock()
 	commandsCopy := make([]Command, len(t.commands))
@@ -92,33 +161,12 @@ func (t *testCommandHandler) getCommands() []Command {
 	return commandsCopy
 }
 
-func (t *testCommandHandler) UpdateState(command Command, commandSequence int64, lastFlushedSequence int64) (any, error) {
-	t.lock.Lock()
-	defer t.lock.Unlock()
-	t.commands = append(t.commands, command)
-	return nil, nil
-}
-
-func (t *testCommandHandler) Flush(completionFunc func(lastFlushedSequence int64) error) error {
-	return nil
-}
-
-func (t *testCommandHandler) NewCommand() (Command, error) {
+func (t *testStateMachine) NewCommand() (Command, error) {
 	return &testCommand{}, nil
 }
 
-const testCommandType = CommandType(2)
-
 type testCommand struct {
 	data string
-}
-
-func (t *testCommand) Type() CommandType {
-	return testCommandType
-}
-
-func (t *testCommand) GroupID(numGroups int) int64 {
-	return 0
 }
 
 func (t *testCommand) Serialize(buff []byte) ([]byte, error) {
@@ -133,17 +181,4 @@ func (t *testCommand) Deserialize(buff []byte) ([]byte, error) {
 	end := 4 + int(ltd)
 	t.data = string(buff[4:end])
 	return buff[end:], nil
-}
-
-type testClusterState struct {
-	leader    int
-	followers []string
-}
-
-func (t *testClusterState) FollowerAddresses() []string {
-	return t.followers
-}
-
-func (t *testClusterState) FollowerFailure(address string, err error) {
-	log.Errorf("follower %s failed: %v", address, err)
 }
