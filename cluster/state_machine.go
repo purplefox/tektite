@@ -19,7 +19,8 @@ import (
 /*
 StateMachine is a distributed state machine that persists its state using object storage. Clients can concurrently
 update the state machine through their own instances of this struct. It serves as a foundation for various distributed
-concurrency primitives, such as group membership, distributed locks, distributed sequences, and more.
+concurrency primitives, such as group membership, distributed locks, distributed sequences, and more. It is not itself
+a *finite* state machine, but can be used to create finite state machines.
 
 The state managed by StateMachine is serialized as JSON bytes and stored in object storage. The state can be of any type
 that json.Marshal can accept as a pointer.
