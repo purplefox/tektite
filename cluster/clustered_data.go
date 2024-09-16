@@ -2,10 +2,9 @@ package cluster
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
-	"github.com/google/uuid"
 	"github.com/pkg/errors"
-	"github.com/spirit-labs/tektite/asl/errwrap"
 	"github.com/spirit-labs/tektite/common"
 	log "github.com/spirit-labs/tektite/logger"
 	"github.com/spirit-labs/tektite/objstore"
@@ -84,18 +83,18 @@ type ClusteredData struct {
 	lock           sync.Mutex
 	dataBucketName string
 	dataKeyPrefix  string
-	stateMachine   *StateMachine[string]
+	stateMachine   *StateMachine
 	objStoreClient objstore.Client
-	instanceID     string
+	epoch          uint64
 	dataCallback   DataCallback
 	opts           ClusteredDataOpts
 	loadStateTimer *time.Timer
-	state          clusteredDataState
+	loaded         bool
 }
 
+// TODO can be function
 type DataCallback interface {
 	Loaded(buff []byte)
-	GetInitialState() []byte
 }
 
 func NewClusteredData(stateMachineBucketName string, stateMachineKeyPrefix string, dataBucketName string,
@@ -104,8 +103,7 @@ func NewClusteredData(stateMachineBucketName string, stateMachineKeyPrefix strin
 		objStoreClient: objStoreClient,
 		dataBucketName: dataBucketName,
 		dataKeyPrefix:  dataKeyPrefix,
-		instanceID:     uuid.New().String(),
-		stateMachine: NewStateMachine[string](stateMachineBucketName, stateMachineKeyPrefix, objStoreClient,
+		stateMachine: NewStateMachine(stateMachineBucketName, stateMachineKeyPrefix, objStoreClient,
 			StateMachineOpts{}),
 		opts:         opts,
 		dataCallback: metadata,
@@ -113,15 +111,6 @@ func NewClusteredData(stateMachineBucketName string, stateMachineKeyPrefix strin
 }
 
 const DefaultLoadStateRetryInterval = 5 * time.Second
-
-type clusteredDataState int
-
-const (
-	stateNotOwner clusteredDataState = iota
-	stateLoading
-	stateOwner
-	stateFailedToTakeOwnership
-)
 
 type ClusteredDataOpts struct {
 	LoadStateRetryInterval time.Duration
@@ -133,128 +122,107 @@ func (mo *ClusteredDataOpts) setDefaults() {
 	}
 }
 
-func (m *ClusteredData) TakeOwnership() error {
+func (m *ClusteredData) TakeOwnership() (bool, error) {
 	m.lock.Lock()
 	defer m.lock.Unlock()
-	if m.state != stateNotOwner {
-		return errors.Errorf("cannot take ownership, state is %d", m.state)
+	if m.loaded {
+		return false, errors.New("already loaded")
 	}
-	m.state = stateLoading
-	return m.loadData()
+	return m.loadDataWithRetry()
 }
 
 func (m *ClusteredData) StoreData(data []byte) (bool, error) {
 	m.lock.Lock()
 	defer m.lock.Unlock()
-	if m.state != stateOwner {
-		return false, errwrap.New("cannot store data, state is not owner")
+	if !m.loaded {
+		return false, errors.New("not loaded")
 	}
-	return m.storeData(m.instanceID, data)
+	return m.storeData(m.epoch, data)
 }
 
-next: make this synchrinous and retry on unavailable 
-func (m *ClusteredData) loadData() error {
-	ok, err := m.doLoadData()
-	if err == nil {
-		if ok {
-			m.state = stateOwner
-		} else {
-			// Failed to store initial state as another leaded sneaked in
-			log.Infof("failed to load state as another node became leader")
-			m.state = stateFailedToTakeOwnership
+func (m *ClusteredData) loadDataWithRetry() (bool, error) {
+	for {
+		ok, err := m.loadData()
+		if err == nil {
+			if ok {
+				m.loaded = true
+			}
+			return ok, err
 		}
-		return nil
+		if !common.IsUnavailableError(err) {
+			return false, err
+		}
+		log.Warnf("unable to load leader state - object store is unavailable: %v", err)
+		time.Sleep(m.opts.LoadStateRetryInterval)
 	}
-	if common.IsUnavailableError(err) {
-		// schedule another attempt
-		m.loadStateTimer = time.AfterFunc(m.opts.LoadStateRetryInterval, func() {
-			m.lock.Lock()
-			defer m.lock.Unlock()
-			if m.state != stateLoading {
-				return
-			}
-			if err := m.loadData(); err != nil {
-				log.Warnf("Error loading controller state: %v", err)
-			}
-		})
-		return nil
-	}
-	return err
 }
 
-func (m *ClusteredData) createDataKey(instanceID string) string {
-	return fmt.Sprintf("%s-%s", m.dataKeyPrefix, instanceID)
+func (m *ClusteredData) createDataKey(epoch uint64) string {
+	return fmt.Sprintf("%s-%010d", m.dataKeyPrefix, epoch)
 }
 
-func (m *ClusteredData) doLoadData() (bool, error) {
-	// Update with a no-op to load latest data
-	lastInstanceID, err := m.stateMachine.Update(func(state string) (string, error) {
-		return state, nil
+func buffToEpoch(buff []byte) uint64 {
+	var epoch uint64
+	if len(buff) > 0 {
+		epoch = binary.BigEndian.Uint64(buff)
+	}
+	return epoch
+}
+
+func (m *ClusteredData) loadData() (bool, error) {
+	// Atomically increment the epoch
+	buff, err := m.stateMachine.Update(func(state []byte) ([]byte, error) {
+		epoch := buffToEpoch(state)
+		newState := make([]byte, 8)
+		binary.BigEndian.PutUint64(newState, epoch+1)
+		return newState, nil
 	})
 	if err != nil {
 		return false, err
 	}
+	m.epoch = buffToEpoch(buff)
+	prevEpoch := m.epoch - 1
+	// Now we try and load the key with the highest epoch - the key might be lower than prevEpoch as no data might
+	// have been stored in previous epoch
 	var data []byte
-	if lastInstanceID != "" {
-		dataKey := m.createDataKey(lastInstanceID)
-		// TODO retries and timeout
+	for {
+		dataKey := m.createDataKey(prevEpoch)
 		data, err = m.objStoreClient.Get(context.Background(), m.dataBucketName, dataKey)
 		if err != nil {
 			return false, err
 		}
 		if len(data) == 0 {
-			// Metadata state is missing. We always store the state before updating the state machine, so this should never
-			// occur
-			return false, errors.Errorf("metadata key '%s' not found - cannot start controller", dataKey)
+			// no key found - try with next lower epoch
+			if prevEpoch == 0 {
+				// No data to load
+				break
+			}
+			prevEpoch--
+		} else {
+			break
 		}
 	}
-	m.instanceID = uuid.New().String()
-
-	// Store the metadata and update ourself in the state machine
-	var dataToStore []byte
-	if data != nil {
-		dataToStore = data
-	} else {
-		dataToStore = m.dataCallback.GetInitialState()
-		if len(dataToStore) == 0 {
-			return false, errors.New("initial state cannot be nil or empty")
-		}
-	}
-	ok, err := m.storeData(lastInstanceID, dataToStore)
-	if err != nil {
-		return false, err
-	}
-	if !ok {
-		return false, nil
-	}
-	if data != nil {
-		m.dataCallback.Loaded(data)
-	}
+	m.dataCallback.Loaded(data)
 	return true, nil
 }
 
-func (m *ClusteredData) storeData(prevInstanceID string, metaData []byte) (bool, error) {
-	// First we store the actual data under a key that includes the instance id
-	metadataKey := m.createDataKey(m.instanceID)
+func (m *ClusteredData) storeData(epoch uint64, data []byte) (bool, error) {
+	dataKey := m.createDataKey(epoch)
 	// TODO retries and timeout
-	if err := m.objStoreClient.Put(context.Background(), m.dataBucketName, metadataKey, metaData); err != nil {
+	if err := m.objStoreClient.Put(context.Background(), m.dataBucketName, dataKey, data); err != nil {
 		return false, err
 	}
-	// Then we conditionally update the state machine with our instance id only if previous instance id is what we
-	// expect
-	newInstanceID, err := m.stateMachine.Update(func(instanceID string) (string, error) {
-		if prevInstanceID != instanceID {
-			return instanceID, nil
-		}
-		// Update with our instance id
-		return m.instanceID, nil
+	// Then we get latest epoch using a no-op update
+	buff, err := m.stateMachine.Update(func(buff []byte) ([]byte, error) {
+		return buff, nil
 	})
 	if err != nil {
 		return false, err
 	}
-	if newInstanceID != m.instanceID {
-		// Conditional update didn't succeed - another controller has updated and become leader, we must stop
-		log.Infof("controller %s failed to store metadata as no longer leader", m.instanceID)
+	currEpoch := buffToEpoch(buff)
+	if currEpoch != epoch {
+		// Epoch has changed - fail the store
+		//log.Info("controller failed to store metadata as no longer leader")
 		return false, nil
 	}
 	return true, nil

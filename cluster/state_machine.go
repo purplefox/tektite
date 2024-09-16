@@ -1,7 +1,6 @@
 package cluster
 
 import (
-	"encoding/json"
 	"fmt"
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
@@ -21,9 +20,6 @@ StateMachine is a distributed state machine that persists its state using object
 update the state machine through their own instances of this struct. It serves as a foundation for various distributed
 concurrency primitives, such as group membership, distributed locks, distributed sequences, and more. It is not itself
 a *finite* state machine, but can be used to create finite state machines.
-
-The state managed by StateMachine is serialized as JSON bytes and stored in object storage. The state can be of any type
-that json.Marshal can accept as a pointer.
 
 StateMachine uses conditional writes via the PutIfNotExists method of the object store. This method atomically stores an
 object only if no existing object with the same key is present.
@@ -59,7 +55,7 @@ Optionally, StateMachine can be configured to write the latest state to a dedica
 This is done by specifying the LatestStateBucketName in the options. The bucket should have no expiration policy. In the
 rare event that the most recent state machine key is lost, the key can be restored from this backup to the state machine bucket.
 */
-type StateMachine[T any] struct {
+type StateMachine struct {
 	lock           sync.Mutex
 	stateBucket    string
 	stateKeyPrefix string
@@ -72,7 +68,7 @@ type StateMachine[T any] struct {
 	updateTimer    *time.Timer
 	lastUpdateTime int64
 	nextSequence   int
-	state          T
+	state          []byte
 	reinitCount    int64
 	retryCount     int64
 }
@@ -91,8 +87,8 @@ type StateMachineOpts struct {
 	LatestStateBucketName     string
 }
 
-func NewStateMachine[T any](stateBucket string, stateKeyPrefix string, objStoreClient objstore.Client,
-	opts StateMachineOpts) *StateMachine[T] {
+func NewStateMachine(stateBucket string, stateKeyPrefix string, objStoreClient objstore.Client,
+	opts StateMachineOpts) *StateMachine {
 	if opts.MaxTimeBeforeReinitialise == 0 {
 		opts.MaxTimeBeforeReinitialise = DefaultMaxTimeBeforeReinitialise
 	}
@@ -109,7 +105,7 @@ func NewStateMachine[T any](stateBucket string, stateKeyPrefix string, objStoreC
 	if opts.LatestStateBucketName != "" {
 		memberID = uuid.New().String()
 	}
-	sm := &StateMachine[T]{
+	sm := &StateMachine{
 		stateBucket:    stateBucket,
 		stateKeyPrefix: stateKeyPrefix,
 		objStoreClient: objStoreClient,
@@ -121,7 +117,7 @@ func NewStateMachine[T any](stateBucket string, stateKeyPrefix string, objStoreC
 	return sm
 }
 
-func (s *StateMachine[T]) Start() {
+func (s *StateMachine) Start() {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 	if s.started {
@@ -133,7 +129,7 @@ func (s *StateMachine[T]) Start() {
 	s.started = true
 }
 
-func (s *StateMachine[T]) Stop() {
+func (s *StateMachine) Stop() {
 	s.stopping.Store(true)
 	s.lock.Lock()
 	defer s.lock.Unlock()
@@ -146,13 +142,13 @@ func (s *StateMachine[T]) Stop() {
 	s.started = false
 }
 
-func (s *StateMachine[T]) NextSequence() int {
+func (s *StateMachine) NextSequence() int {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 	return s.nextSequence
 }
 
-func (s *StateMachine[T]) scheduleUpdate() {
+func (s *StateMachine) scheduleUpdate() {
 	s.updateTimer = time.AfterFunc(s.opts.AutoUpdateInterval, func() {
 		s.lock.Lock()
 		defer s.lock.Unlock()
@@ -162,7 +158,7 @@ func (s *StateMachine[T]) scheduleUpdate() {
 		if int64(arista.NanoTime())-s.lastUpdateTime >= int64(s.opts.AutoUpdateInterval) {
 			// If user hasn't updated, then we run a no-op update - this ensures our current sequence number remains
 			// up to date with latest state.
-			if _, err := s.update(func(state T) (T, error) {
+			if _, err := s.update(func(state []byte) ([]byte, error) {
 				return state, nil
 			}); err != nil {
 				log.Errorf("failed to update: %v", err)
@@ -172,13 +168,13 @@ func (s *StateMachine[T]) scheduleUpdate() {
 	})
 }
 
-func (s *StateMachine[T]) createKey(sequence int) string {
+func (s *StateMachine) createKey(sequence int) string {
 	// Note that later keys have a smaller key - this allows us to init more quickly as we just load the first key
 	key := fmt.Sprintf("%s-%09d", s.stateKeyPrefix, math.MaxInt64-sequence)
 	return key
 }
 
-func (s *StateMachine[T]) extractSequenceFromKey(key string) (int, error) {
+func (s *StateMachine) extractSequenceFromKey(key string) (int, error) {
 	i, err := strconv.Atoi(key[len(s.stateKeyPrefix)+1:])
 	if err != nil {
 		return 0, err
@@ -189,7 +185,7 @@ func (s *StateMachine[T]) extractSequenceFromKey(key string) (int, error) {
 // Update updates the state based on the previous state. The update function provides the operation to update the state
 // based on the previous state, returning the new state which will be stored. The function returns when the new state
 // has been committed to object storage, or an error occurs.
-func (s *StateMachine[T]) Update(updateFunc func(state T) (T, error)) (T, error) {
+func (s *StateMachine) Update(updateFunc func(state []byte) ([]byte, error)) ([]byte, error) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 	state, err := s.update(updateFunc)
@@ -197,12 +193,12 @@ func (s *StateMachine[T]) Update(updateFunc func(state T) (T, error)) (T, error)
 	return state, err
 }
 
-func (s *StateMachine[T]) update(updateFunc func(state T) (T, error)) (T, error) {
-	var tZero T
+func (s *StateMachine) update(updateFunc func(state []byte) ([]byte, error)) ([]byte, error) {
+	var tZero []byte
 outer:
 	for {
 		if s.nextSequence == -1 {
-			// Initialise sequence by loading newest one from object store
+			// Initialise the sequence by loading the newest one from object store
 			if err := s.init(); err != nil {
 				return tZero, err
 			}
@@ -248,21 +244,16 @@ outer:
 	}
 }
 
-func (s *StateMachine[T]) innerUpdate(seq int, state T, updateFunc func(state T) (T, error)) (bool, T, error) {
-	var tZero T
+func (s *StateMachine) innerUpdate(seq int, state []byte, updateFunc func(state []byte) ([]byte, error)) (bool, []byte, error) {
 	var err error
 	state, err = updateFunc(state)
 	if err != nil {
-		return false, tZero, err
-	}
-	buff, err := json.Marshal(&state)
-	if err != nil {
-		return false, tZero, err
+		return false, nil, err
 	}
 	newKey := s.createKey(seq)
-	put, err := objstore.PutIfNotExistsWithTimeout(s.objStoreClient, s.stateBucket, newKey, buff, s.opts.ObjStoreCallTimeout)
+	put, err := objstore.PutIfNotExistsWithTimeout(s.objStoreClient, s.stateBucket, newKey, state, s.opts.ObjStoreCallTimeout)
 	if err != nil {
-		return false, tZero, err
+		return false, nil, err
 	}
 	if put {
 		if s.opts.LatestStateBucketName != "" {
@@ -270,29 +261,24 @@ func (s *StateMachine[T]) innerUpdate(seq int, state T, updateFunc func(state T)
 			// This can be used as a backup to restore state if sequenced keys are lost, e.g. due to bucket expiration
 			// deleting them
 			latestStateKey := fmt.Sprintf("%s-latest-state-%s", s.stateKeyPrefix, s.memberID)
-			if err := objstore.PutWithTimeout(s.objStoreClient, s.opts.LatestStateBucketName, latestStateKey, buff, s.opts.ObjStoreCallTimeout); err != nil {
-				return false, tZero, err
+			if err := objstore.PutWithTimeout(s.objStoreClient, s.opts.LatestStateBucketName, latestStateKey, state, s.opts.ObjStoreCallTimeout); err != nil {
+				return false, nil, err
 			}
 		}
 		return true, state, nil
 	}
 	// key exists already - load the state
-	buffRead, err := objstore.GetWithTimeout(s.objStoreClient, s.stateBucket, newKey, s.opts.ObjStoreCallTimeout)
+	state, err = objstore.GetWithTimeout(s.objStoreClient, s.stateBucket, newKey, s.opts.ObjStoreCallTimeout)
 	if err != nil {
-		return false, tZero, err
+		return false, nil, err
 	}
-	if buffRead == nil {
-		return false, tZero, errors.Errorf("cannot find key %v", newKey)
+	if state == nil {
+		return false, nil, errors.Errorf("cannot find key %v", newKey)
 	}
-	var newState T
-	if err := json.Unmarshal(buffRead, &newState); err != nil {
-		return false, tZero, err
-	}
-	state = newState
 	return false, state, nil
 }
 
-func (s *StateMachine[T]) init() error {
+func (s *StateMachine) init() error {
 	for {
 		if s.stopping.Load() {
 			return errors.New("state machine is stopping")
@@ -309,7 +295,7 @@ func (s *StateMachine[T]) init() error {
 	}
 }
 
-func (s *StateMachine[T]) initInner() error {
+func (s *StateMachine) initInner() error {
 	// We store keys in reverse order, so the latest key will be the first one returned - we only need to list 1 key
 	existingInfos, err := objstore.ListObjectsWithPrefixWithTimeout(s.objStoreClient, s.stateBucket, s.stateKeyPrefix,
 		1, s.opts.ObjStoreCallTimeout)
@@ -332,21 +318,16 @@ func (s *StateMachine[T]) initInner() error {
 		if buff == nil {
 			return errors.Errorf("cannot find key %s on init", lastInfo.Key)
 		}
-		var state T
-		if err := json.Unmarshal(buff, &state); err != nil {
-			return err
-		}
 		s.nextSequence = lastSeq + 1
-		s.state = state
+		s.state = buff
 	} else {
 		s.nextSequence = 0
-		var zeroT T
-		s.state = zeroT
+		s.state = nil
 	}
 	return nil
 }
 
-func (s *StateMachine[T]) GetState() (T, error) {
+func (s *StateMachine) GetState() ([]byte, error) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 	return s.state, nil

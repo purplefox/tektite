@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"encoding/json"
 	"github.com/pkg/errors"
 	log "github.com/spirit-labs/tektite/logger"
 	"github.com/spirit-labs/tektite/objstore"
@@ -14,7 +15,7 @@ type Membership struct {
 	updateTimer          *time.Timer
 	lock                 sync.Mutex
 	started              bool
-	stateMachine         *StateMachine[MembershipState]
+	stateMachine         *StateMachine
 	address              string
 	leader               bool
 	becomeLeaderCallback func()
@@ -24,7 +25,7 @@ func NewMembership(bucket string, keyPrefix string, address string, objStoreClie
 	evictionInterval time.Duration, becomeLeaderCallback func()) *Membership {
 	return &Membership{
 		address:              address,
-		stateMachine:         NewStateMachine[MembershipState](bucket, keyPrefix, objStoreClient, StateMachineOpts{}),
+		stateMachine:         NewStateMachine(bucket, keyPrefix, objStoreClient, StateMachineOpts{}),
 		updateInterval:       updateInterval,
 		evictionInterval:     evictionInterval,
 		becomeLeaderCallback: becomeLeaderCallback,
@@ -70,7 +71,12 @@ func (m *Membership) updateOnTimer() {
 }
 
 func (m *Membership) update() error {
-	newState, err := m.stateMachine.Update(m.updateState)
+	buff, err := m.stateMachine.Update(m.updateState)
+	if err != nil {
+		return err
+	}
+	var newState MembershipState
+	err = json.Unmarshal(buff, &newState)
 	if err != nil {
 		return err
 	}
@@ -83,7 +89,12 @@ func (m *Membership) update() error {
 	return nil
 }
 
-func (m *Membership) updateState(memberShipState MembershipState) (MembershipState, error) {
+func (m *Membership) updateState(buff []byte) ([]byte, error) {
+	var memberShipState MembershipState
+	err := json.Unmarshal(buff, &memberShipState)
+	if err != nil {
+		return nil, err
+	}
 	now := time.Now().UnixMilli()
 	found := false
 	var newMembers []MembershipEntry
@@ -115,7 +126,7 @@ func (m *Membership) updateState(memberShipState MembershipState) (MembershipSta
 		// NewmMember joined or member(s) where evicted, so we change the epoch
 		memberShipState.Epoch++
 	}
-	return memberShipState, nil
+	return json.Marshal(&memberShipState)
 }
 
 type MembershipState struct {
@@ -134,5 +145,14 @@ func (m *Membership) GetState() (MembershipState, error) {
 	if !m.started {
 		return MembershipState{}, errors.New("not started")
 	}
-	return m.stateMachine.GetState()
+	buff, err := m.stateMachine.GetState()
+	if err != nil {
+		return MembershipState{}, err
+	}
+	memberShipState := MembershipState{}
+	err = json.Unmarshal(buff, &memberShipState)
+	if err != nil {
+		return MembershipState{}, err
+	}
+	return memberShipState, nil
 }
