@@ -7,9 +7,7 @@ import (
 type Client interface {
 	QueryTablesInRange(keyStart []byte, keyEnd []byte) (OverlappingTables, error)
 
-	RegisterL0Tables(registrationBatch RegistrationBatch) error
-
-	ApplyChanges(registrationBatch RegistrationBatch) error
+	ApplyChanges(registrationBatch RegistrationBatch) (bool, error)
 
 	PollForJob() (*CompactionJob, error)
 
