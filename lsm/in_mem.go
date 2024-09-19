@@ -22,8 +22,8 @@ func (c *InMemClient) ApplyChanges(registrationBatch RegistrationBatch) (bool, e
 	return c.LevelManager.ApplyChanges(registrationBatch, false)
 }
 
-func (c *InMemClient) RegisterDeadVersionRange(versionRange VersionRange, clusterName string, clusterVersion int) error {
-	return c.LevelManager.RegisterDeadVersionRange(versionRange, clusterName, clusterVersion)
+func (c *InMemClient) RegisterDeadVersionRange(versionRange VersionRange) error {
+	return c.LevelManager.RegisterDeadVersionRange(versionRange)
 }
 
 func (c *InMemClient) PollForJob() (*CompactionJob, error) {

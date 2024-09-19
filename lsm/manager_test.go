@@ -1123,7 +1123,7 @@ func TestRegisterDeadVersionRanges(t *testing.T) {
 }
 
 func validateDeadVersions(t *testing.T, lm *Manager, rng VersionRange, expected []NonOverlappingTables) {
-	err := lm.RegisterDeadVersionRange(rng, "test_cluster", 0)
+	err := lm.RegisterDeadVersionRange(rng)
 	require.NoError(t, err)
 	tables := getInRange(t, lm, 0, 30)
 	require.Equal(t, OverlappingTables(expected), tables)

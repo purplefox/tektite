@@ -11,7 +11,7 @@ type Client interface {
 
 	PollForJob() (*CompactionJob, error)
 
-	RegisterDeadVersionRange(versionRange VersionRange, clusterName string, clusterVersion int) error
+	RegisterDeadVersionRange(versionRange VersionRange) error
 
 	StoreLastFlushedVersion(version int64) error
 

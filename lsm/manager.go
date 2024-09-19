@@ -212,7 +212,7 @@ func (m *Manager) MaybeScheduleCompaction() error {
 
 // RegisterDeadVersionRange - registers a range of versions as dead - versions in the dead range will be removed from
 // the store via compaction, asynchronously. Note the version range is inclusive.
-func (m *Manager) RegisterDeadVersionRange(versionRange VersionRange, clusterName string, clusterVersion int) error {
+func (m *Manager) RegisterDeadVersionRange(versionRange VersionRange) error {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 	if !m.started {
