@@ -170,6 +170,7 @@ func (m *Manager) ApplyChanges(regBatch RegistrationBatch, noCompaction bool) (b
 	if !m.started {
 		return false, errors.New("not started")
 	}
+	l0FreeSpaceBefore := m.getL0FreeSpace()
 	isL0Reg := false
 	for _, reg := range regBatch.Registrations {
 		if reg.Level == 0 {
@@ -177,7 +178,7 @@ func (m *Manager) ApplyChanges(regBatch RegistrationBatch, noCompaction bool) (b
 			break
 		}
 	}
-	if isL0Reg && m.getL0FreeSpace() < 0 {
+	if isL0Reg && m.getL0FreeSpace() <= 0 {
 		// L0 is full - push back
 		return false, nil
 	}
@@ -185,18 +186,19 @@ func (m *Manager) ApplyChanges(regBatch RegistrationBatch, noCompaction bool) (b
 		if err := m.applyCompactionChanges(regBatch); err != nil {
 			return false, err
 		}
-		return true, nil
-	}
-	if err := m.doApplyChanges(regBatch); err != nil {
-		return false, err
-	}
-	if log.DebugEnabled {
-		m.dump()
-	}
-	if !noCompaction && m.enableCompaction && (isL0Reg || regBatch.Compaction) {
-		if err := m.maybeScheduleCompaction(); err != nil {
+	} else {
+		if err := m.doApplyChanges(regBatch); err != nil {
 			return false, err
 		}
+		if !noCompaction && m.enableCompaction && (isL0Reg || regBatch.Compaction) {
+			if err := m.maybeScheduleCompaction(); err != nil {
+				return false, err
+			}
+		}
+	}
+	if l0FreeSpaceBefore <= 0 && m.getL0FreeSpace() > 0 {
+		// Space has been freed in L0, call the callback so any waiting writers can retry their writes
+		go m.l0FreeCallback()
 	}
 	return true, nil
 }
@@ -398,10 +400,6 @@ func (m *Manager) applyCompactionChanges(regBatch RegistrationBatch) error {
 	m.tablesToDelete = append(m.tablesToDelete, tablesToDelete...)
 	if err := m.compactionComplete(regBatch.JobID); err != nil {
 		return err
-	}
-	if m.getL0FreeSpace() > 0 {
-		// There is space in L0, call the callback so any waiting writers can retry their writes
-		go m.l0FreeCallback()
 	}
 	return nil
 }

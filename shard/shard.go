@@ -127,7 +127,6 @@ func (s *LsmShard) maybeRetryApplies() {
 }
 
 func (s *LsmShard) maybeRetryApplies0() error {
-
 	s.lock.Lock()
 	defer s.lock.Unlock()
 	pos := 0
@@ -138,6 +137,9 @@ func (s *LsmShard) maybeRetryApplies0() error {
 			return queuedReg.completionFunc(err)
 		}
 		if ok {
+			if queuedReg.completionFunc == nil {
+				log.Infof("foo")
+			}
 			completionFuncs = append(completionFuncs, queuedReg.completionFunc)
 			pos++
 		} else {
@@ -168,14 +170,19 @@ func (s *LsmShard) maybeRetryApplies0() error {
 		// no errors - remove the elements we successfully applied
 		newQueueSize := len(s.queuedRegistrations) - pos
 		if newQueueSize > 0 {
-			s.queuedRegistrations = make([]queuedRegistration, len(s.queuedRegistrations)-pos)
-			copy(s.queuedRegistrations, s.queuedRegistrations[pos:])
+			newRegs := make([]queuedRegistration, len(s.queuedRegistrations)-pos)
+			copy(newRegs, s.queuedRegistrations[pos:])
+			s.queuedRegistrations = newRegs
 		} else {
 			s.queuedRegistrations = nil
 			s.hasQueuedRegistrations.Store(false)
 		}
 		// Call the completions
 		for _, cf := range completionFuncs {
+			log.Infof("calling cf %v", cf)
+			if cf == nil {
+				log.Infof("foo")
+			}
 			if err := cf(nil); err != nil {
 				log.Errorf("failed to apply completion function: %v", err)
 			}

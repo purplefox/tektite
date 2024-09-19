@@ -3,12 +3,12 @@ package shard
 import (
 	"encoding/binary"
 	"github.com/pkg/errors"
+	"github.com/spirit-labs/tektite/common"
 	"github.com/spirit-labs/tektite/lsm"
 	"github.com/spirit-labs/tektite/transport"
 )
 
 type Client interface {
-
 	ApplyLsmChanges(regBatch lsm.RegistrationBatch) error
 
 	GetOffset(topicID int, partitionID int) (int64, error)
@@ -17,12 +17,12 @@ type Client interface {
 // client - note this is not goroutine safe!
 // on error, the caller must close the connection
 type client struct {
-	m *Manager
-	shardID int
-	address string
-	conn transport.Connection
+	m           *Manager
+	shardID     int
+	address     string
+	conn        transport.Connection
 	connFactory transport.ConnectionFactory
-	closed bool
+	closed      bool
 }
 
 func (c *client) getConnection() (transport.Connection, error) {
@@ -33,9 +33,10 @@ func (c *client) getConnection() (transport.Connection, error) {
 		return c.conn, nil
 	}
 	if c.address == "" {
-		address, err := c.m.addressForShard(c.shardID)
-		if err != nil {
-			return nil, err
+		address, ok := c.m.AddressForShard(c.shardID)
+		if !ok {
+			// No address for this shard - this can happen if no members in cluster
+			return nil, common.NewTektiteErrorf(common.Unavailable, "no address for shard %d", c.shardID)
 		}
 		c.address = address
 	}
@@ -76,8 +77,7 @@ func (c *client) GetOffset(topicID int, partitionID int) (int64, error) {
 }
 
 func createRequestBuffer() []byte {
-	buff := make([]byte, 0, 128) // Initial size guess
+	buff := make([]byte, 0, 128)                  // Initial size guess
 	buff = binary.BigEndian.AppendUint16(buff, 1) // rpc version - currently 1
 	return buff
 }
-
