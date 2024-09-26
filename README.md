@@ -18,6 +18,7 @@ The following is a brief overview of the directory structure of the Tektite webs
 content/            # Markdown content files like about page, blog posts, etc.
 data/               # Data files with the contet of the different sections of the the home page like capabilities, use cases, etc.
 docs/               # Tektite documentation
+logo-sources/            # The logo Inkscape source files and different variations of the logo
 public/             # Generated site
 resources/          # Generated resources like images, etc.
 themes/
