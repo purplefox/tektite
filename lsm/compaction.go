@@ -22,7 +22,7 @@ type compactionState struct {
 	jobQueue           []jobHolder
 	inProgress         map[string]inProgressCompaction
 	pendingCompactions map[int]int
-	lockedRanges       map[int][]lockedRange
+	lockedRanges       map[int][]LockedRange
 	pollers            *pollerQueue
 	stats              CompactionStats
 }
@@ -31,7 +31,7 @@ func newCompactionState() compactionState {
 	return compactionState{
 		inProgress:         make(map[string]inProgressCompaction),
 		pendingCompactions: map[int]int{},
-		lockedRanges:       map[int][]lockedRange{},
+		lockedRanges:       map[int][]LockedRange{},
 		pollers:            &pollerQueue{},
 	}
 }
@@ -41,15 +41,15 @@ type jobHolder struct {
 	completionFunc func(error)
 }
 
-type lockedRange struct {
-	level int
-	start []byte
-	end   []byte
+type LockedRange struct {
+	Level int
+	Start []byte
+	End   []byte
 }
 
-func (lr *lockedRange) overlaps(rng *lockedRange) bool {
-	dontOverlapRight := bytes.Compare(rng.start, lr.end) > 0
-	dontOverlapLeft := bytes.Compare(rng.end, lr.start) < 0
+func (lr *LockedRange) overlaps(rng *LockedRange) bool {
+	dontOverlapRight := bytes.Compare(rng.Start, lr.End) > 0
+	dontOverlapLeft := bytes.Compare(rng.End, lr.Start) < 0
 	dontOverlap := dontOverlapLeft || dontOverlapRight
 	return !dontOverlap
 }
@@ -96,13 +96,13 @@ func (m *Manager) scheduleCompaction(level int, tableSlices [][]*TableEntry, com
 outer:
 	for _, tables := range tableSlices {
 		// We compact each inner slice in its own job
-		var tablesToCompact [][]tableToCompact
+		var tablesToCompact [][]TableToCompact
 		// Calculate overall range of source tables
 		sourceRangeStart, sourceRangeEnd := m.calculateOverallRange(tables)
-		sourceRange := lockedRange{
-			level: level,
-			start: sourceRangeStart,
-			end:   sourceRangeEnd,
+		sourceRange := LockedRange{
+			Level: level,
+			Start: sourceRangeStart,
+			End:   sourceRangeEnd,
 		}
 		// First check if this range is already locked
 		if m.isRangeLocked(sourceRange) {
@@ -127,10 +127,10 @@ outer:
 		if len(overlapping) > 0 {
 			destRangeStart, destRangeEnd = m.calculateOverallRange(append(tables, overlapping...))
 		}
-		destRange := lockedRange{
-			level: level + 1,
-			start: destRangeStart,
-			end:   destRangeEnd,
+		destRange := LockedRange{
+			Level: level + 1,
+			Start: destRangeStart,
+			End:   destRangeEnd,
 		}
 		// Now check if overall result range is already locked in destination level - note that we lock ranges instead
 		// of locking destination tables, as when compacting into an empty level we still need to lock the destination
@@ -151,9 +151,9 @@ outer:
 		hasDeletes := false
 		for i := len(tables) - 1; i >= 0; i-- {
 			st := tables[i].copy()
-			tablesToCompact = append(tablesToCompact, []tableToCompact{{
-				level: level,
-				table: st,
+			tablesToCompact = append(tablesToCompact, []TableToCompact{{
+				Level: level,
+				Table: st,
 			}})
 			tableIDs = append(tableIDs, st.SSTableID)
 			if !hasPotentialExpiredEntries {
@@ -173,11 +173,11 @@ outer:
 			}
 		}
 		if len(overlapping) > 0 {
-			var nextLevelTables []tableToCompact
+			var nextLevelTables []TableToCompact
 			for _, st := range overlapping {
-				nextLevelTables = append(nextLevelTables, tableToCompact{
-					level: level + 1,
-					table: st.copy(),
+				nextLevelTables = append(nextLevelTables, TableToCompact{
+					Level: level + 1,
+					Table: st.copy(),
 				})
 				if int64(st.MaxVersion) > lfv {
 					canCompact = false
@@ -203,16 +203,16 @@ outer:
 		// in the compaction with a non compactable version (> last flushed version)
 		preserveTombstones := !canCompact || m.getLastLevel() > destLevel
 		job := CompactionJob{
-			id:                 id,
-			levelFrom:          level,
-			tables:             tablesToCompact,
-			isMove:             move,
-			preserveTombstones: preserveTombstones,
-			scheduleTime:       arista.NanoTime(),
-			serverTime:         uint64(time.Now().UTC().UnixMilli()),
-			lastFlushedVersion: m.masterRecord.lastFlushedVersion,
-			sourceRange:        sourceRange,
-			destRange:          destRange,
+			Id:                 id,
+			LevelFrom:          level,
+			Tables:             tablesToCompact,
+			IsMove:             move,
+			PreserveTombstones: preserveTombstones,
+			ScheduleTime:       arista.NanoTime(),
+			ServerTime:         uint64(time.Now().UTC().UnixMilli()),
+			LastFlushedVersion: m.masterRecord.lastFlushedVersion,
+			SourceRange:        sourceRange,
+			DestRange:          destRange,
 		}
 		log.Debugf("created compaction job %s from level %d last level is %d, preserve tombstones is %t",
 			id, level, m.getLastLevel(), preserveTombstones)
@@ -226,12 +226,12 @@ outer:
 	for _, job := range jobs {
 		if log.DebugEnabled {
 			sb := strings.Builder{}
-			for _, no := range job.tables {
+			for _, no := range job.Tables {
 				for _, ttc := range no {
-					sb.WriteString(fmt.Sprintf("level:%d table:%v, ", ttc.level, ttc.table.SSTableID))
+					sb.WriteString(fmt.Sprintf("level:%d table:%v, ", ttc.Level, ttc.Table.SSTableID))
 				}
 			}
-			log.Debugf("compaction created job %s %s", job.id, sb.String())
+			log.Debugf("compaction created job %s %s", job.Id, sb.String())
 		}
 		m.queueOrDespatchJob(job, complFunc)
 	}
@@ -239,8 +239,8 @@ outer:
 	return len(jobs), hasLocked, nil
 }
 
-func (m *Manager) isRangeLocked(rng lockedRange) bool {
-	rngs, ok := m.lockedRanges[rng.level]
+func (m *Manager) isRangeLocked(rng LockedRange) bool {
+	rngs, ok := m.lockedRanges[rng.Level]
 	if !ok {
 		return false
 	}
@@ -291,7 +291,7 @@ func (m *Manager) queueOrDespatchJob(job CompactionJob, complFunc func(error)) {
 		poller.timer.Stop()
 		poller.timer = nil
 		timer := m.scheduleJobTimeout(holder, poller.connectionID)
-		m.inProgress[job.id] = inProgressCompaction{
+		m.inProgress[job.Id] = inProgressCompaction{
 			timer:        timer,
 			jobHolder:    holder,
 			connectionID: poller.connectionID,
@@ -306,49 +306,49 @@ func (m *Manager) queueOrDespatchJob(job CompactionJob, complFunc func(error)) {
 		})
 		m.stats.QueuedJobs++
 	}
-	m.pendingCompactions[job.levelFrom]++
+	m.pendingCompactions[job.LevelFrom]++
 }
 
 func (m *Manager) lockTablesForJob(job CompactionJob) {
-	m.lockRange(job.sourceRange)
-	m.lockRange(job.destRange)
+	m.lockRange(job.SourceRange)
+	m.lockRange(job.DestRange)
 }
 
 func (m *Manager) unlockTablesForJob(job CompactionJob) {
-	m.unlockRange(job.sourceRange)
-	m.unlockRange(job.destRange)
+	m.unlockRange(job.SourceRange)
+	m.unlockRange(job.DestRange)
 }
 
-func (m *Manager) LockRange(rng lockedRange) {
+func (m *Manager) LockRange(rng LockedRange) {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 	m.lockRange(rng)
 }
 
-func (m *Manager) lockRange(rng lockedRange) {
-	m.lockedRanges[rng.level] = append(m.lockedRanges[rng.level], rng)
+func (m *Manager) lockRange(rng LockedRange) {
+	m.lockedRanges[rng.Level] = append(m.lockedRanges[rng.Level], rng)
 }
 
-func (m *Manager) UnlockRange(rng lockedRange) {
+func (m *Manager) UnlockRange(rng LockedRange) {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 	m.unlockRange(rng)
 }
 
-func (m *Manager) unlockRange(r lockedRange) {
-	levelRanges, ok := m.lockedRanges[r.level]
+func (m *Manager) unlockRange(r LockedRange) {
+	levelRanges, ok := m.lockedRanges[r.Level]
 	if ok {
-		var newRanges []lockedRange
+		var newRanges []LockedRange
 		found := false
 		for _, rng := range levelRanges {
-			if !(bytes.Equal(r.start, rng.start) && bytes.Equal(r.end, rng.end)) {
+			if !(bytes.Equal(r.Start, rng.Start) && bytes.Equal(r.End, rng.End)) {
 				newRanges = append(newRanges, rng)
 			} else {
 				found = true
 			}
 		}
 		if found {
-			m.lockedRanges[r.level] = newRanges
+			m.lockedRanges[r.Level] = newRanges
 			return
 		}
 	}
@@ -517,16 +517,16 @@ func (m *Manager) compactionComplete(jobID string) error {
 		panic("cannot find compactionJob")
 	}
 	job := compactionJob.jobHolder.job
-	delete(m.inProgress, job.id)
-	m.pendingCompactions[job.levelFrom]--
+	delete(m.inProgress, job.Id)
+	m.pendingCompactions[job.LevelFrom]--
 	if compactionJob.timer != nil {
 		compactionJob.timer.Stop()
 	}
 	m.unlockTablesForJob(job)
 	m.stats.InProgressJobs--
 	m.stats.CompletedJobs++
-	dur := time.Duration(arista.NanoTime() - job.scheduleTime)
-	log.Debugf("compaction complete job %s - time from schedule %d ms", job.id, dur.Milliseconds())
+	dur := time.Duration(arista.NanoTime() - job.ScheduleTime)
+	log.Debugf("compaction complete job %s - time from schedule %d ms", job.Id, dur.Milliseconds())
 	cf := compactionJob.jobHolder.completionFunc
 	if cf != nil {
 		log.Debugf("in compactionComplete %s calling completion", jobID)
@@ -549,7 +549,7 @@ func (m *Manager) pollForJob(connectionID int, completionFunc func(job *Compacti
 		m.stats.QueuedJobs--
 		job := holder.job
 		timer := m.scheduleJobTimeout(holder, connectionID)
-		m.inProgress[job.id] = inProgressCompaction{
+		m.inProgress[job.Id] = inProgressCompaction{
 			timer:        timer,
 			jobHolder:    holder,
 			connectionID: connectionID,
@@ -589,22 +589,22 @@ func (m *Manager) scheduleJobTimeout(holder jobHolder, connectionID int) *time.T
 	return time.AfterFunc(m.cfg.CompactionJobTimeout, func() {
 		m.lock.Lock()
 		defer m.lock.Unlock()
-		log.Debugf("compaction job timedout %s with connection id %d", holder.job.id, connectionID)
+		log.Debugf("compaction job timedout %s with connection id %d", holder.job.Id, connectionID)
 		m.cancelInProgressJob(holder)
 	})
 }
 
 func (m *Manager) cancelInProgressJob(holder jobHolder) {
-	log.Debugf("cancelling in progress job: %s", holder.job.id)
+	log.Debugf("cancelling in progress job: %s", holder.job.Id)
 	job := holder.job
-	_, ok := m.inProgress[job.id]
+	_, ok := m.inProgress[job.Id]
 	if !ok {
 		return // already complete
 	}
-	log.Debugf("compaction job: %s timed out, will be made available to pollers again", holder.job.id)
-	delete(m.inProgress, job.id)
+	log.Debugf("compaction job: %s timed out, will be made available to pollers again", holder.job.Id)
+	delete(m.inProgress, job.Id)
 
-	m.pendingCompactions[job.levelFrom]--
+	m.pendingCompactions[job.LevelFrom]--
 	m.stats.InProgressJobs--
 	m.stats.TimedOutJobs++
 
@@ -620,9 +620,9 @@ func (m *Manager) connectionClosed(connectionID int) {
 	// be a significant time. We don't want compaction to stall for a long time when a node dies, as this can cause
 	// L0 to reach max size and registrations to block.
 	for _, inProg := range m.inProgress {
-		log.Debugf("inprogress job: %s connection id:%d", inProg.jobHolder.job.id, inProg.connectionID)
+		log.Debugf("inprogress job: %s connection id:%d", inProg.jobHolder.job.Id, inProg.connectionID)
 		if inProg.connectionID == connectionID {
-			log.Debugf("cancelling inprogress job %s on connection close", inProg.jobHolder.job.id)
+			log.Debugf("cancelling inprogress job %s on connection close", inProg.jobHolder.job.Id)
 			m.cancelInProgressJob(inProg.jobHolder)
 		}
 	}
@@ -678,9 +678,9 @@ type LevelIterator interface {
 	Reset() error
 }
 
-type tableToCompact struct {
-	level int
-	table *TableEntry
+type TableToCompact struct {
+	Level int
+	Table *TableEntry
 }
 
 type inProgressCompaction struct {
@@ -690,108 +690,95 @@ type inProgressCompaction struct {
 }
 
 type CompactionJob struct {
-	id                 string
-	levelFrom          int
-	tables             [][]tableToCompact
-	isMove             bool
-	preserveTombstones bool
-	scheduleTime       uint64 // Used for timing jobs - we use nanoTime to avoid errors if clocks change
-	serverTime         uint64 // Unix millis past epoch - Used on compaction workers to determine if entries are expired
-	lastFlushedVersion int64
-	sourceRange        lockedRange // Not used on compaction worker so doesn't need to be serialized
-	destRange          lockedRange // Not used on compaction worker so doesn't need to be serialized
+	Id                 string
+	LevelFrom          int
+	Tables             [][]TableToCompact
+	IsMove             bool
+	PreserveTombstones bool
+	ScheduleTime       uint64 // Used for timing jobs - we use nanoTime to avoid errors if clocks change
+	ServerTime         uint64 // Unix millis past epoch - Used on compaction workers to determine if entries are expired
+	LastFlushedVersion int64
+	SourceRange        LockedRange // Not used on compaction worker so doesn't need to be serialized
+	DestRange          LockedRange // Not used on compaction worker so doesn't need to be serialized
 }
 
 func (c *CompactionJob) Serialize(buff []byte) []byte {
-	buff = encoding.AppendStringToBufferLE(buff, c.id)
-	buff = encoding.AppendUint32ToBufferLE(buff, uint32(c.levelFrom))
-	buff = encoding.AppendUint32ToBufferLE(buff, uint32(len(c.tables)))
-	for _, tablesToCompact := range c.tables {
+	buff = encoding.AppendStringToBufferLE(buff, c.Id)
+	buff = encoding.AppendUint32ToBufferLE(buff, uint32(c.LevelFrom))
+	buff = encoding.AppendUint32ToBufferLE(buff, uint32(len(c.Tables)))
+	for _, tablesToCompact := range c.Tables {
 		buff = encoding.AppendUint32ToBufferLE(buff, uint32(len(tablesToCompact)))
 		for _, tableToCompact := range tablesToCompact {
-			buff = encoding.AppendUint32ToBufferLE(buff, uint32(tableToCompact.level))
-			buff = tableToCompact.table.serialize(buff)
+			buff = encoding.AppendUint32ToBufferLE(buff, uint32(tableToCompact.Level))
+			buff = tableToCompact.Table.serialize(buff)
 		}
 	}
-	buff = encoding.AppendBoolToBuffer(buff, c.isMove)
-	buff = encoding.AppendBoolToBuffer(buff, c.preserveTombstones)
-	buff = encoding.AppendUint64ToBufferLE(buff, c.scheduleTime)
-	buff = encoding.AppendUint64ToBufferLE(buff, c.serverTime)
-	buff = encoding.AppendUint64ToBufferLE(buff, uint64(c.lastFlushedVersion))
+	buff = encoding.AppendBoolToBuffer(buff, c.IsMove)
+	buff = encoding.AppendBoolToBuffer(buff, c.PreserveTombstones)
+	buff = encoding.AppendUint64ToBufferLE(buff, c.ScheduleTime)
+	buff = encoding.AppendUint64ToBufferLE(buff, c.ServerTime)
+	buff = encoding.AppendUint64ToBufferLE(buff, uint64(c.LastFlushedVersion))
 	return buff
 }
 
 func (c *CompactionJob) Deserialize(buff []byte, offset int) int {
-	c.id, offset = encoding.ReadStringFromBufferLE(buff, offset)
+	c.Id, offset = encoding.ReadStringFromBufferLE(buff, offset)
 	var lf uint32
 	lf, offset = encoding.ReadUint32FromBufferLE(buff, offset)
-	c.levelFrom = int(lf)
+	c.LevelFrom = int(lf)
 	var nt uint32
 	nt, offset = encoding.ReadUint32FromBufferLE(buff, offset)
-	c.tables = make([][]tableToCompact, int(nt))
+	c.Tables = make([][]TableToCompact, int(nt))
 	for i := 0; i < int(nt); i++ {
 		var nt2 uint32
 		nt2, offset = encoding.ReadUint32FromBufferLE(buff, offset)
-		tables2 := make([]tableToCompact, int(nt2))
+		tables2 := make([]TableToCompact, int(nt2))
 		for j := 0; j < int(nt2); j++ {
 			var l uint32
 			l, offset = encoding.ReadUint32FromBufferLE(buff, offset)
 			te := &TableEntry{}
 			offset = te.deserialize(buff, offset)
-			tables2[j] = tableToCompact{
-				level: int(l),
-				table: te,
+			tables2[j] = TableToCompact{
+				Level: int(l),
+				Table: te,
 			}
 		}
-		c.tables[i] = tables2
+		c.Tables[i] = tables2
 	}
-	c.isMove, offset = encoding.ReadBoolFromBuffer(buff, offset)
-	c.preserveTombstones, offset = encoding.ReadBoolFromBuffer(buff, offset)
-	c.scheduleTime, offset = encoding.ReadUint64FromBufferLE(buff, offset)
-	c.serverTime, offset = encoding.ReadUint64FromBufferLE(buff, offset)
+	c.IsMove, offset = encoding.ReadBoolFromBuffer(buff, offset)
+	c.PreserveTombstones, offset = encoding.ReadBoolFromBuffer(buff, offset)
+	c.ScheduleTime, offset = encoding.ReadUint64FromBufferLE(buff, offset)
+	c.ServerTime, offset = encoding.ReadUint64FromBufferLE(buff, offset)
 	var lfv uint64
 	lfv, offset = encoding.ReadUint64FromBufferLE(buff, offset)
-	c.lastFlushedVersion = int64(lfv)
+	c.LastFlushedVersion = int64(lfv)
 	return offset
 }
 
-type CompactionResult struct {
-	id        string
-	newTables []TableEntry
-}
-
-func (c *CompactionResult) Serialize(buff []byte) []byte {
-	buff = encoding.AppendStringToBufferLE(buff, c.id)
-	buff = encoding.AppendUint32ToBufferLE(buff, uint32(len(c.newTables)))
-	for _, nt := range c.newTables {
-		buff = nt.serialize(buff)
-	}
-	return buff
-}
-
-func (c *CompactionResult) Deserialize(buff []byte, offset int) int {
-	c.id, offset = encoding.ReadStringFromBufferLE(buff, offset)
-	var nt uint32
-	nt, offset = encoding.ReadUint32FromBufferLE(buff, offset)
-	c.newTables = make([]TableEntry, int(nt))
-	for i := 0; i < int(nt); i++ {
-		offset = c.newTables[i].deserialize(buff, offset)
-	}
-	return offset
-}
-
-// MergeSSTables takes a list of SSTables, and merges them to produce one or more output SSTables
-// Tables lower in the list take precedence to tables higher in the list when a common key is found
-
-type ssTableInfo struct {
-	sst              *sst.SSTable
-	rangeStart       []byte
-	rangeEnd         []byte
-	minVersion       uint64
-	maxVersion       uint64
-	deleteRatio      float64
-	numPrefixDeletes uint32
-}
+//type CompactionResult struct {
+//	id        string
+//	newTables []TableEntry
+//}
+//
+//func (c *CompactionResult) Serialize(buff []byte) []byte {
+//	buff = encoding.AppendStringToBufferLE(buff, c.id)
+//	buff = encoding.AppendUint32ToBufferLE(buff, uint32(len(c.newTables)))
+//	for _, nt := range c.newTables {
+//		buff = nt.serialize(buff)
+//	}
+//	return buff
+//}
+//
+//func (c *CompactionResult) Deserialize(buff []byte, offset int) int {
+//	c.id, offset = encoding.ReadStringFromBufferLE(buff, offset)
+//	var nt uint32
+//	nt, offset = encoding.ReadUint32FromBufferLE(buff, offset)
+//	c.newTables = make([]TableEntry, int(nt))
+//	for i := 0; i < int(nt); i++ {
+//		offset = c.newTables[i].deserialize(buff, offset)
+//	}
+//	return offset
+//}
 
 type poller struct {
 	addedTime      uint64

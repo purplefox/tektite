@@ -1,4 +1,4 @@
-package lsm
+package cworker
 
 import (
 	"bytes"
@@ -9,6 +9,7 @@ import (
 	"github.com/spirit-labs/tektite/common"
 	iteration2 "github.com/spirit-labs/tektite/iteration"
 	log "github.com/spirit-labs/tektite/logger"
+	"github.com/spirit-labs/tektite/lsm"
 	"github.com/spirit-labs/tektite/objstore"
 	"github.com/spirit-labs/tektite/sst"
 	"github.com/spirit-labs/tektite/tabcache"
@@ -17,7 +18,7 @@ import (
 	"time"
 )
 
-func NewCompactionWorkerService(cfg *conf.Config, levelMgrClientFactory ClientFactory, tableCache *tabcache.Cache,
+func NewCompactionWorkerService(cfg *conf.Config, levelMgrClientFactory lsm.ClientFactory, tableCache *tabcache.Cache,
 	objStoreClient objstore.Client, retentions bool) *CompactionWorkerService {
 	return &CompactionWorkerService{
 		cfg:                   cfg,
@@ -30,7 +31,7 @@ func NewCompactionWorkerService(cfg *conf.Config, levelMgrClientFactory ClientFa
 
 type CompactionWorkerService struct {
 	cfg                   *conf.Config
-	levelMgrClientFactory ClientFactory
+	levelMgrClientFactory lsm.ClientFactory
 	tableCache            *tabcache.Cache
 	objStoreClient        objstore.Client
 	workers               []*compactionWorker
@@ -89,7 +90,7 @@ type compactionWorker struct {
 	cws            *CompactionWorkerService
 	started        atomic.Bool
 	stopWg         sync.WaitGroup
-	client         Client
+	client         lsm.Client
 	slabRetentions map[int]time.Duration
 }
 
@@ -144,9 +145,9 @@ func (c *compactionWorker) loop() {
 		for c.started.Load() {
 			registrations, deRegistrations, err := c.processJob(job)
 			if err == nil {
-				regBatch := RegistrationBatch{
+				regBatch := lsm.RegistrationBatch{
 					Compaction:      true,
-					JobID:           job.id,
+					JobID:           job.Id,
 					Registrations:   registrations,
 					DeRegistrations: deRegistrations,
 				}
@@ -171,61 +172,61 @@ func (c *compactionWorker) loop() {
 	}
 }
 
-func (c *compactionWorker) processJob(job *CompactionJob) ([]RegistrationEntry, []RegistrationEntry, error) {
-	if job.isMove {
-		if len(job.tables) != 1 {
+func (c *compactionWorker) processJob(job *lsm.CompactionJob) ([]lsm.RegistrationEntry, []lsm.RegistrationEntry, error) {
+	if job.IsMove {
+		if len(job.Tables) != 1 {
 			panic("move requires single run to move")
 		}
-		registrations, deRegistrations := c.moveTables(job.tables[0], job.levelFrom, job.preserveTombstones)
+		registrations, deRegistrations := c.moveTables(job.Tables[0], job.LevelFrom, job.PreserveTombstones)
 		return registrations, deRegistrations, nil
 	}
 	start := time.Now()
 	tablesInMerge := 0
-	for _, overlapping := range job.tables {
+	for _, overlapping := range job.Tables {
 		tablesInMerge += len(overlapping)
 	}
 	var maxAddedTime uint64
-	tablesToMerge := make([][]tableToMerge, len(job.tables))
-	for i, overlapping := range job.tables {
+	tablesToMerge := make([][]tableToMerge, len(job.Tables))
+	for i, overlapping := range job.Tables {
 		tables := make([]tableToMerge, len(overlapping))
 		for j, t := range overlapping {
-			ssTable, err := c.cws.tableCache.GetSSTable(t.table.SSTableID)
+			ssTable, err := c.cws.tableCache.GetSSTable(t.Table.SSTableID)
 			if err != nil {
 				return nil, nil, err
 			}
 			if ssTable == nil {
-				return nil, nil, errwrap.Errorf("cannot process compaction job as cannot find sstable: %v (%s)", t.table.SSTableID,
-					string(t.table.SSTableID))
+				return nil, nil, errwrap.Errorf("cannot process compaction job as cannot find sstable: %v (%s)", t.Table.SSTableID,
+					string(t.Table.SSTableID))
 			}
 			tables[j] = tableToMerge{
-				deadVersionRanges: t.table.DeadVersionRanges,
+				deadVersionRanges: t.Table.DeadVersionRanges,
 				sst:               ssTable,
-				id:                t.table.SSTableID,
+				id:                t.Table.SSTableID,
 			}
-			if t.table.AddedTime > maxAddedTime {
+			if t.Table.AddedTime > maxAddedTime {
 				// We compute the maxAddedTime time - this is used for the AddedTime of any new sstables created.
-				maxAddedTime = t.table.AddedTime
+				maxAddedTime = t.Table.AddedTime
 			}
 		}
 		tablesToMerge[i] = tables
 	}
 	mergeStart := time.Now()
-	var retProvider RetentionProvider
+	var retProvider lsm.RetentionProvider
 	if c.cws.retentions {
 		retProvider = c
 	}
-	infos, err := mergeSSTables(common.DataFormatV1, tablesToMerge, job.preserveTombstones,
-		c.cws.cfg.CompactionMaxSSTableSize, job.lastFlushedVersion, job.id, retProvider, job.serverTime)
+	infos, err := mergeSSTables(common.DataFormatV1, tablesToMerge, job.PreserveTombstones,
+		c.cws.cfg.CompactionMaxSSTableSize, job.LastFlushedVersion, job.Id, retProvider, job.ServerTime)
 	if err != nil {
 		return nil, nil, err
 	}
 	mergeDur := time.Now().Sub(mergeStart)
-	log.Debugf("merge for job %s took %d ms", job.id, mergeDur.Milliseconds())
+	log.Debugf("merge for job %s took %d ms", job.Id, mergeDur.Milliseconds())
 	// Now push the tables to the cloud store
 	var ids []sst.SSTableID
 	for _, info := range infos {
 		id := []byte(fmt.Sprintf("sst-%s", uuid.New().String()))
-		log.Debugf("compaction job %s created sstable %v", job.id, id)
+		log.Debugf("compaction job %s created sstable %v", job.Id, id)
 		ids = append(ids, id)
 		for {
 			tableBytes := info.sst.Serialize()
@@ -246,9 +247,9 @@ func (c *compactionWorker) processJob(job *CompactionJob) ([]RegistrationEntry, 
 			time.Sleep(c.cws.cfg.SSTablePushRetryDelay)
 		}
 	}
-	var tableEntries []TableEntry
+	var tableEntries []lsm.TableEntry
 	for i, info := range infos {
-		tableEntries = append(tableEntries, TableEntry{
+		tableEntries = append(tableEntries, lsm.TableEntry{
 			SSTableID:        ids[i],
 			RangeStart:       info.rangeStart,
 			RangeEnd:         info.rangeEnd,
@@ -260,96 +261,72 @@ func (c *compactionWorker) processJob(job *CompactionJob) ([]RegistrationEntry, 
 			AddedTime:        maxAddedTime,
 			NumPrefixDeletes: info.numPrefixDeletes,
 		})
-		log.Debugf("compaction %s created table %v delete ratio %f preserve tombstones %t", job.id, ids[i], info.deleteRatio,
-			job.preserveTombstones)
+		log.Debugf("compaction %s created table %v delete ratio %f preserve tombstones %t", job.Id, ids[i], info.deleteRatio,
+			job.PreserveTombstones)
 	}
-	registrations, deRegistrations := changesToApply(tableEntries, job)
+	registrations, deRegistrations := lsm.ChangesToApply(tableEntries, job)
 	dur := time.Now().Sub(start)
-	log.Debugf("compaction job %s took %d ms to process on worker %p", job.id, dur.Milliseconds(), c)
+	log.Debugf("compaction job %s took %d ms to process on worker %p", job.Id, dur.Milliseconds(), c)
 	return registrations, deRegistrations, nil
 }
 
-func changesToApply(newTables []TableEntry, job *CompactionJob) ([]RegistrationEntry, []RegistrationEntry) {
-	var registrations []RegistrationEntry
-	for _, newTable := range newTables {
-		registrations = append(registrations, RegistrationEntry{
-			Level:            job.levelFrom + 1,
-			TableID:          newTable.SSTableID,
-			KeyStart:         newTable.RangeStart,
-			KeyEnd:           newTable.RangeEnd,
-			MinVersion:       newTable.MinVersion,
-			MaxVersion:       newTable.MaxVersion,
-			DeleteRatio:      newTable.DeleteRatio,
-			NumEntries:       newTable.NumEntries,
-			TableSize:        newTable.Size,
-			AddedTime:        newTable.AddedTime,
-			NumPrefixDeletes: newTable.NumPrefixDeletes,
-		})
-	}
-	var deRegistrations []RegistrationEntry
-	for _, overlapping := range job.tables {
-		for _, ssTable := range overlapping {
-			deRegistrations = append(deRegistrations, RegistrationEntry{
-				Level:            ssTable.level,
-				TableID:          ssTable.table.SSTableID,
-				KeyStart:         ssTable.table.RangeStart,
-				KeyEnd:           ssTable.table.RangeEnd,
-				MinVersion:       ssTable.table.MinVersion,
-				MaxVersion:       ssTable.table.MaxVersion,
-				DeleteRatio:      ssTable.table.DeleteRatio,
-				NumEntries:       ssTable.table.NumEntries,
-				TableSize:        ssTable.table.Size,
-				NumPrefixDeletes: ssTable.table.NumPrefixDeletes,
-			})
-		}
-	}
-	return registrations, deRegistrations
-}
-
 // no overlap, so we can move tables directly from one level to another without merging anything
-func (c *compactionWorker) moveTables(tables []tableToCompact, fromLevel int, preserveTombstones bool) ([]RegistrationEntry, []RegistrationEntry) {
-	var registrations []RegistrationEntry
+func (c *compactionWorker) moveTables(tables []lsm.TableToCompact, fromLevel int, preserveTombstones bool) ([]lsm.RegistrationEntry, []lsm.RegistrationEntry) {
+	var registrations []lsm.RegistrationEntry
 	for _, tableToCompact := range tables {
-		if tableToCompact.table.DeleteRatio == float64(1) && !preserveTombstones {
+		if tableToCompact.Table.DeleteRatio == float64(1) && !preserveTombstones {
 			// The table is just deletes, and we're moving it into the last level - we can just drop it
 		} else {
-			registrations = append(registrations, RegistrationEntry{
+			registrations = append(registrations, lsm.RegistrationEntry{
 				Level:       fromLevel + 1,
-				TableID:     tableToCompact.table.SSTableID,
-				KeyStart:    tableToCompact.table.RangeStart,
-				KeyEnd:      tableToCompact.table.RangeEnd,
-				MinVersion:  tableToCompact.table.MinVersion,
-				MaxVersion:  tableToCompact.table.MaxVersion,
-				DeleteRatio: tableToCompact.table.DeleteRatio,
-				NumEntries:  tableToCompact.table.NumEntries,
-				TableSize:   tableToCompact.table.Size,
-				AddedTime:   tableToCompact.table.AddedTime,
+				TableID:     tableToCompact.Table.SSTableID,
+				KeyStart:    tableToCompact.Table.RangeStart,
+				KeyEnd:      tableToCompact.Table.RangeEnd,
+				MinVersion:  tableToCompact.Table.MinVersion,
+				MaxVersion:  tableToCompact.Table.MaxVersion,
+				DeleteRatio: tableToCompact.Table.DeleteRatio,
+				NumEntries:  tableToCompact.Table.NumEntries,
+				TableSize:   tableToCompact.Table.Size,
+				AddedTime:   tableToCompact.Table.AddedTime,
 			})
 		}
 	}
-	var deRegistrations []RegistrationEntry
+	var deRegistrations []lsm.RegistrationEntry
 	for _, tableToCompact := range tables {
-		deRegistrations = append(deRegistrations, RegistrationEntry{
+		deRegistrations = append(deRegistrations, lsm.RegistrationEntry{
 			Level:       fromLevel,
-			TableID:     tableToCompact.table.SSTableID,
-			KeyStart:    tableToCompact.table.RangeStart,
-			KeyEnd:      tableToCompact.table.RangeEnd,
-			DeleteRatio: tableToCompact.table.DeleteRatio,
-			NumEntries:  tableToCompact.table.NumEntries,
-			TableSize:   tableToCompact.table.Size,
+			TableID:     tableToCompact.Table.SSTableID,
+			KeyStart:    tableToCompact.Table.RangeStart,
+			KeyEnd:      tableToCompact.Table.RangeEnd,
+			DeleteRatio: tableToCompact.Table.DeleteRatio,
+			NumEntries:  tableToCompact.Table.NumEntries,
+			TableSize:   tableToCompact.Table.Size,
 		})
 	}
 	return registrations, deRegistrations
 }
 
 type tableToMerge struct {
-	deadVersionRanges []VersionRange
+	deadVersionRanges []lsm.VersionRange
 	sst               *sst.SSTable
 	id                sst.SSTableID
 }
 
+// MergeSSTables takes a list of SSTables, and merges them to produce one or more output SSTables
+// Tables lower in the list take precedence to tables higher in the list when a common key is found
+
+type ssTableInfo struct {
+	sst              *sst.SSTable
+	rangeStart       []byte
+	rangeEnd         []byte
+	minVersion       uint64
+	maxVersion       uint64
+	deleteRatio      float64
+	numPrefixDeletes uint32
+}
+
 func mergeSSTables(format common.DataFormat, tables [][]tableToMerge, preserveTombstones bool, maxTableSize int,
-	lastFlushedVersion int64, jobID string, retentionProvider RetentionProvider, serverTime uint64) ([]ssTableInfo, error) {
+	lastFlushedVersion int64, jobID string, retentionProvider lsm.RetentionProvider, serverTime uint64) ([]ssTableInfo, error) {
 
 	totEntries := 0
 	chainIters := make([]iteration2.Iterator, len(tables))
@@ -359,10 +336,10 @@ func mergeSSTables(format common.DataFormat, tables [][]tableToMerge, preserveTo
 			sstIter, err := table.sst.NewIterator(nil, nil)
 			log.Debugf("mergingSSTables with dead version range %v", table.deadVersionRanges)
 			if len(table.deadVersionRanges) > 0 {
-				sstIter = NewRemoveDeadVersionsIterator(sstIter, table.deadVersionRanges)
+				sstIter = lsm.NewRemoveDeadVersionsIterator(sstIter, table.deadVersionRanges)
 			}
 			if retentionProvider != nil {
-				sstIter = NewRemoveExpiredEntriesIterator(sstIter, table.sst.CreationTime(), serverTime, retentionProvider)
+				sstIter = lsm.NewRemoveExpiredEntriesIterator(sstIter, table.sst.CreationTime(), serverTime, retentionProvider)
 			}
 			sourceIters[j] = sstIter
 
@@ -449,7 +426,7 @@ func mergeSSTables(format common.DataFormat, tables [][]tableToMerge, preserveTo
 	return outTables, nil
 }
 
-func validateRegBatch(regBatch RegistrationBatch, objStore objstore.Client, bucketName string) {
+func validateRegBatch(regBatch lsm.RegistrationBatch, objStore objstore.Client, bucketName string) {
 	for _, entry := range regBatch.Registrations {
 		validateRegEntry(entry, objStore, bucketName)
 	}
@@ -458,7 +435,7 @@ func validateRegBatch(regBatch RegistrationBatch, objStore objstore.Client, buck
 	}
 }
 
-func validateRegEntry(entry RegistrationEntry, objStore objstore.Client, bucketName string) {
+func validateRegEntry(entry lsm.RegistrationEntry, objStore objstore.Client, bucketName string) {
 	buff, err := objstore.GetWithTimeout(objStore, bucketName, string(entry.TableID), objstore.DefaultCallTimeout)
 	if err != nil {
 		panic(err)

@@ -67,9 +67,9 @@ func TestPollForJobWhenAlreadyInQueue(t *testing.T) {
 	job, err := getJob(lm)
 	require.NoError(t, err)
 	require.NotNil(t, job)
-	require.Equal(t, 1, job.levelFrom)
-	require.Equal(t, 2, len(job.tables))
-	require.Equal(t, 1, len(job.tables[0]))
+	require.Equal(t, 1, job.LevelFrom)
+	require.Equal(t, 2, len(job.Tables))
+	require.Equal(t, 1, len(job.Tables[0]))
 	stats = lm.GetCompactionStats()
 	require.Equal(t, 0, stats.QueuedJobs)
 	require.Equal(t, 1, stats.InProgressJobs)
@@ -104,9 +104,9 @@ func TestPollForJobWhenNotAlreadyInQueue(t *testing.T) {
 	res := <-ch
 	require.NoError(t, res.err)
 	require.NotNil(t, res.job)
-	require.Equal(t, 1, res.job.levelFrom)
-	require.Equal(t, 2, len(res.job.tables))
-	require.Equal(t, 1, len(res.job.tables[0]))
+	require.Equal(t, 1, res.job.LevelFrom)
+	require.Equal(t, 2, len(res.job.Tables))
+	require.Equal(t, 1, len(res.job.Tables[0]))
 
 	stats = lm.GetCompactionStats()
 	require.Equal(t, 0, stats.QueuedJobs)
@@ -153,9 +153,9 @@ func TestPollersGetJobsInOrder(t *testing.T) {
 		res := <-ch
 		require.NoError(t, res.err)
 		require.NotNil(t, res.job)
-		require.Equal(t, 1, res.job.levelFrom)
-		require.Equal(t, 2, len(res.job.tables))
-		require.Equal(t, 1, len(res.job.tables[0]))
+		require.Equal(t, 1, res.job.LevelFrom)
+		require.Equal(t, 2, len(res.job.Tables))
+		require.Equal(t, 1, len(res.job.Tables[0]))
 	}
 }
 
@@ -205,44 +205,44 @@ func TestPollJobAndCompleteItLevel0To1(t *testing.T) {
 	require.Equal(t, 1, stats.InProgressJobs)
 	require.Equal(t, 0, stats.QueuedJobs)
 
-	require.False(t, job.isMove)
-	require.Equal(t, 0, job.levelFrom)
+	require.False(t, job.IsMove)
+	require.Equal(t, 0, job.LevelFrom)
 
-	require.Equal(t, 6, len(job.tables))
+	require.Equal(t, 6, len(job.Tables))
 
-	require.Equal(t, 1, len(job.tables[0]))
-	require.Equal(t, "sst1-5", string(job.tables[0][0].table.SSTableID))
-	require.Equal(t, []byte("key00008"), trimVersion(job.tables[0][0].table.RangeStart))
-	require.Equal(t, []byte("key00031"), trimVersion(job.tables[0][0].table.RangeEnd))
+	require.Equal(t, 1, len(job.Tables[0]))
+	require.Equal(t, "sst1-5", string(job.Tables[0][0].Table.SSTableID))
+	require.Equal(t, []byte("key00008"), trimVersion(job.Tables[0][0].Table.RangeStart))
+	require.Equal(t, []byte("key00031"), trimVersion(job.Tables[0][0].Table.RangeEnd))
 
-	require.Equal(t, 1, len(job.tables[1]))
-	require.Equal(t, "sst1-4", string(job.tables[1][0].table.SSTableID))
-	require.Equal(t, []byte("key00033"), trimVersion(job.tables[1][0].table.RangeStart))
-	require.Equal(t, []byte("key00048"), trimVersion(job.tables[1][0].table.RangeEnd))
+	require.Equal(t, 1, len(job.Tables[1]))
+	require.Equal(t, "sst1-4", string(job.Tables[1][0].Table.SSTableID))
+	require.Equal(t, []byte("key00033"), trimVersion(job.Tables[1][0].Table.RangeStart))
+	require.Equal(t, []byte("key00048"), trimVersion(job.Tables[1][0].Table.RangeEnd))
 
-	require.Equal(t, 1, len(job.tables[2]))
-	require.Equal(t, "sst1-3", string(job.tables[2][0].table.SSTableID))
-	require.Equal(t, []byte("key00009"), trimVersion(job.tables[2][0].table.RangeStart))
-	require.Equal(t, []byte("key00022"), trimVersion(job.tables[2][0].table.RangeEnd))
+	require.Equal(t, 1, len(job.Tables[2]))
+	require.Equal(t, "sst1-3", string(job.Tables[2][0].Table.SSTableID))
+	require.Equal(t, []byte("key00009"), trimVersion(job.Tables[2][0].Table.RangeStart))
+	require.Equal(t, []byte("key00022"), trimVersion(job.Tables[2][0].Table.RangeEnd))
 
-	require.Equal(t, 1, len(job.tables[3]))
-	require.Equal(t, "sst1-2", string(job.tables[3][0].table.SSTableID))
-	require.Equal(t, []byte("key00035"), trimVersion(job.tables[3][0].table.RangeStart))
-	require.Equal(t, []byte("key00040"), trimVersion(job.tables[3][0].table.RangeEnd))
+	require.Equal(t, 1, len(job.Tables[3]))
+	require.Equal(t, "sst1-2", string(job.Tables[3][0].Table.SSTableID))
+	require.Equal(t, []byte("key00035"), trimVersion(job.Tables[3][0].Table.RangeStart))
+	require.Equal(t, []byte("key00040"), trimVersion(job.Tables[3][0].Table.RangeEnd))
 
-	require.Equal(t, 1, len(job.tables[4]))
-	require.Equal(t, "sst1-1", string(job.tables[4][0].table.SSTableID))
-	require.Equal(t, []byte("key00011"), trimVersion(job.tables[4][0].table.RangeStart))
-	require.Equal(t, []byte("key00050"), trimVersion(job.tables[4][0].table.RangeEnd))
+	require.Equal(t, 1, len(job.Tables[4]))
+	require.Equal(t, "sst1-1", string(job.Tables[4][0].Table.SSTableID))
+	require.Equal(t, []byte("key00011"), trimVersion(job.Tables[4][0].Table.RangeStart))
+	require.Equal(t, []byte("key00050"), trimVersion(job.Tables[4][0].Table.RangeEnd))
 
-	require.Equal(t, 2, len(job.tables[5]))
-	require.Equal(t, "sst2-3", string(job.tables[5][0].table.SSTableID))
-	require.Equal(t, []byte("key00015"), trimVersion(job.tables[5][0].table.RangeStart))
-	require.Equal(t, []byte("key00030"), trimVersion(job.tables[5][0].table.RangeEnd))
+	require.Equal(t, 2, len(job.Tables[5]))
+	require.Equal(t, "sst2-3", string(job.Tables[5][0].Table.SSTableID))
+	require.Equal(t, []byte("key00015"), trimVersion(job.Tables[5][0].Table.RangeStart))
+	require.Equal(t, []byte("key00030"), trimVersion(job.Tables[5][0].Table.RangeEnd))
 
-	require.Equal(t, "sst2-4", string(job.tables[5][1].table.SSTableID))
-	require.Equal(t, []byte("key00033"), trimVersion(job.tables[5][1].table.RangeStart))
-	require.Equal(t, []byte("key00045"), trimVersion(job.tables[5][1].table.RangeEnd))
+	require.Equal(t, "sst2-4", string(job.Tables[5][1].Table.SSTableID))
+	require.Equal(t, []byte("key00033"), trimVersion(job.Tables[5][1].Table.RangeStart))
+	require.Equal(t, []byte("key00045"), trimVersion(job.Tables[5][1].Table.RangeEnd))
 
 	newTables := []TableEntry{
 		{
@@ -274,10 +274,10 @@ func TestPollJobAndCompleteItLevel0To1(t *testing.T) {
 }
 
 func sendCompactionComplete(t *testing.T, lm *Manager, job *CompactionJob, newTables []TableEntry) {
-	registrations, deRegistrations := changesToApply(newTables, job)
+	registrations, deRegistrations := ChangesToApply(newTables, job)
 	regBatch := RegistrationBatch{
 		Compaction:      true,
-		JobID:           job.id,
+		JobID:           job.Id,
 		Registrations:   registrations,
 		DeRegistrations: deRegistrations,
 	}
@@ -339,35 +339,35 @@ func TestPollJobAndCompleteItLevel0To1EmptyL1(t *testing.T) {
 	require.Equal(t, 1, stats.InProgressJobs)
 	require.Equal(t, 0, stats.QueuedJobs)
 
-	require.False(t, job.isMove)
-	require.Equal(t, 0, job.levelFrom)
+	require.False(t, job.IsMove)
+	require.Equal(t, 0, job.LevelFrom)
 
-	require.Equal(t, 5, len(job.tables))
+	require.Equal(t, 5, len(job.Tables))
 
-	require.Equal(t, 1, len(job.tables[0]))
-	require.Equal(t, "sst1-5", string(job.tables[0][0].table.SSTableID))
-	require.Equal(t, encoding2.EncodeVersion([]byte("key00008"), 0), job.tables[0][0].table.RangeStart)
-	require.Equal(t, encoding2.EncodeVersion([]byte("key00031"), 0), job.tables[0][0].table.RangeEnd)
+	require.Equal(t, 1, len(job.Tables[0]))
+	require.Equal(t, "sst1-5", string(job.Tables[0][0].Table.SSTableID))
+	require.Equal(t, encoding2.EncodeVersion([]byte("key00008"), 0), job.Tables[0][0].Table.RangeStart)
+	require.Equal(t, encoding2.EncodeVersion([]byte("key00031"), 0), job.Tables[0][0].Table.RangeEnd)
 
-	require.Equal(t, 1, len(job.tables[1]))
-	require.Equal(t, "sst1-4", string(job.tables[1][0].table.SSTableID))
-	require.Equal(t, encoding2.EncodeVersion([]byte("key00033"), 0), job.tables[1][0].table.RangeStart)
-	require.Equal(t, encoding2.EncodeVersion([]byte("key00048"), 0), job.tables[1][0].table.RangeEnd)
+	require.Equal(t, 1, len(job.Tables[1]))
+	require.Equal(t, "sst1-4", string(job.Tables[1][0].Table.SSTableID))
+	require.Equal(t, encoding2.EncodeVersion([]byte("key00033"), 0), job.Tables[1][0].Table.RangeStart)
+	require.Equal(t, encoding2.EncodeVersion([]byte("key00048"), 0), job.Tables[1][0].Table.RangeEnd)
 
-	require.Equal(t, 1, len(job.tables[2]))
-	require.Equal(t, "sst1-3", string(job.tables[2][0].table.SSTableID))
-	require.Equal(t, encoding2.EncodeVersion([]byte("key00009"), 0), job.tables[2][0].table.RangeStart)
-	require.Equal(t, encoding2.EncodeVersion([]byte("key00022"), 0), job.tables[2][0].table.RangeEnd)
+	require.Equal(t, 1, len(job.Tables[2]))
+	require.Equal(t, "sst1-3", string(job.Tables[2][0].Table.SSTableID))
+	require.Equal(t, encoding2.EncodeVersion([]byte("key00009"), 0), job.Tables[2][0].Table.RangeStart)
+	require.Equal(t, encoding2.EncodeVersion([]byte("key00022"), 0), job.Tables[2][0].Table.RangeEnd)
 
-	require.Equal(t, 1, len(job.tables[3]))
-	require.Equal(t, "sst1-2", string(job.tables[3][0].table.SSTableID))
-	require.Equal(t, encoding2.EncodeVersion([]byte("key00035"), 0), job.tables[3][0].table.RangeStart)
-	require.Equal(t, encoding2.EncodeVersion([]byte("key00040"), 0), job.tables[3][0].table.RangeEnd)
+	require.Equal(t, 1, len(job.Tables[3]))
+	require.Equal(t, "sst1-2", string(job.Tables[3][0].Table.SSTableID))
+	require.Equal(t, encoding2.EncodeVersion([]byte("key00035"), 0), job.Tables[3][0].Table.RangeStart)
+	require.Equal(t, encoding2.EncodeVersion([]byte("key00040"), 0), job.Tables[3][0].Table.RangeEnd)
 
-	require.Equal(t, 1, len(job.tables[4]))
-	require.Equal(t, "sst1-1", string(job.tables[4][0].table.SSTableID))
-	require.Equal(t, encoding2.EncodeVersion([]byte("key00011"), 0), job.tables[4][0].table.RangeStart)
-	require.Equal(t, encoding2.EncodeVersion([]byte("key00050"), 0), job.tables[4][0].table.RangeEnd)
+	require.Equal(t, 1, len(job.Tables[4]))
+	require.Equal(t, "sst1-1", string(job.Tables[4][0].Table.SSTableID))
+	require.Equal(t, encoding2.EncodeVersion([]byte("key00011"), 0), job.Tables[4][0].Table.RangeStart)
+	require.Equal(t, encoding2.EncodeVersion([]byte("key00050"), 0), job.Tables[4][0].Table.RangeEnd)
 
 	newTables := []TableEntry{
 		createTableEntryWithDeleteRatio("sst2-6", 8, 33, 1.23),
@@ -422,22 +422,22 @@ func TestPollJobAndCompleteItLevel1To2(t *testing.T) {
 	require.Equal(t, 1, stats.InProgressJobs)
 	require.Equal(t, 0, stats.QueuedJobs)
 
-	require.False(t, job.isMove)
-	require.Equal(t, 2, len(job.tables))
-	require.Equal(t, 1, len(job.tables[0]))
-	require.Equal(t, "sst1-5", string(job.tables[0][0].table.SSTableID))
-	require.Equal(t, []byte("key00010"), trimVersion(job.tables[0][0].table.RangeStart))
-	require.Equal(t, []byte("key00019"), trimVersion(job.tables[0][0].table.RangeEnd))
+	require.False(t, job.IsMove)
+	require.Equal(t, 2, len(job.Tables))
+	require.Equal(t, 1, len(job.Tables[0]))
+	require.Equal(t, "sst1-5", string(job.Tables[0][0].Table.SSTableID))
+	require.Equal(t, []byte("key00010"), trimVersion(job.Tables[0][0].Table.RangeStart))
+	require.Equal(t, []byte("key00019"), trimVersion(job.Tables[0][0].Table.RangeEnd))
 
-	require.Equal(t, 2, len(job.tables[1]))
+	require.Equal(t, 2, len(job.Tables[1]))
 
-	require.Equal(t, "sst2-3", string(job.tables[1][0].table.SSTableID))
-	require.Equal(t, []byte("key00010"), trimVersion(job.tables[1][0].table.RangeStart))
-	require.Equal(t, []byte("key00014"), trimVersion(job.tables[1][0].table.RangeEnd))
+	require.Equal(t, "sst2-3", string(job.Tables[1][0].Table.SSTableID))
+	require.Equal(t, []byte("key00010"), trimVersion(job.Tables[1][0].Table.RangeStart))
+	require.Equal(t, []byte("key00014"), trimVersion(job.Tables[1][0].Table.RangeEnd))
 
-	require.Equal(t, "sst2-4", string(job.tables[1][1].table.SSTableID))
-	require.Equal(t, []byte("key00015"), trimVersion(job.tables[1][1].table.RangeStart))
-	require.Equal(t, []byte("key00020"), trimVersion(job.tables[1][1].table.RangeEnd))
+	require.Equal(t, "sst2-4", string(job.Tables[1][1].Table.SSTableID))
+	require.Equal(t, []byte("key00015"), trimVersion(job.Tables[1][1].Table.RangeStart))
+	require.Equal(t, []byte("key00020"), trimVersion(job.Tables[1][1].Table.RangeEnd))
 
 	// try and complete with wrong id
 	regBatch := RegistrationBatch{
@@ -543,7 +543,7 @@ func TestTablesMovedToLastLevelWhenNoOverlapAndNoDeletes(t *testing.T) {
 	job, err := getJob(lm)
 	require.NoError(t, err)
 
-	require.Equal(t, true, job.isMove)
+	require.Equal(t, true, job.IsMove)
 }
 
 func TestTablesNotMovedToLastLevelWhenNoOverlapAndDeletes(t *testing.T) {
@@ -568,7 +568,7 @@ func TestTablesNotMovedToLastLevelWhenNoOverlapAndDeletes(t *testing.T) {
 	job, err := getJob(lm)
 	require.NoError(t, err)
 
-	require.Equal(t, false, job.isMove)
+	require.Equal(t, false, job.IsMove)
 }
 
 func TestTablesMovedToNonLastLevelWhenNoOverlapAndDeletes(t *testing.T) {
@@ -598,7 +598,7 @@ func TestTablesMovedToNonLastLevelWhenNoOverlapAndDeletes(t *testing.T) {
 	job, err := getJob(lm)
 	require.NoError(t, err)
 
-	require.Equal(t, true, job.isMove)
+	require.Equal(t, true, job.IsMove)
 }
 
 func TestFileLockingOnNextLevel(t *testing.T) {
@@ -632,18 +632,18 @@ func TestFileLockingOnNextLevel(t *testing.T) {
 
 	job, err := getJob(lm)
 	require.NoError(t, err)
-	require.Equal(t, 2, len(job.tables))
-	require.Equal(t, 1, len(job.tables[0]))
-	require.Equal(t, "sst1-3", string(job.tables[0][0].table.SSTableID))
+	require.Equal(t, 2, len(job.Tables))
+	require.Equal(t, 1, len(job.Tables[0]))
+	require.Equal(t, "sst1-3", string(job.Tables[0][0].Table.SSTableID))
 
 	// complete the job - this should release locks and then sst13 will have a job created as next highest delete ratio
 	sendCompactionComplete(t, lm, job, nil)
 
 	job, err = getJob(lm)
 	require.NoError(t, err)
-	require.Equal(t, 2, len(job.tables))
-	require.Equal(t, 1, len(job.tables[0]))
-	require.Equal(t, "sst1-2", string(job.tables[0][0].table.SSTableID))
+	require.Equal(t, 2, len(job.Tables))
+	require.Equal(t, 1, len(job.Tables[0]))
+	require.Equal(t, "sst1-2", string(job.Tables[0][0].Table.SSTableID))
 }
 
 func TestFileLocking(t *testing.T) {
@@ -675,18 +675,18 @@ func TestFileLocking(t *testing.T) {
 
 	job, err := getJob(lm)
 	require.NoError(t, err)
-	require.Equal(t, 2, len(job.tables))
-	require.Equal(t, 1, len(job.tables[0]))
-	require.Equal(t, "sst1-3", string(job.tables[0][0].table.SSTableID))
+	require.Equal(t, 2, len(job.Tables))
+	require.Equal(t, 1, len(job.Tables[0]))
+	require.Equal(t, "sst1-3", string(job.Tables[0][0].Table.SSTableID))
 
 	// complete the job - this should release locks and then sst13 will have a job created as next highest delete ratio
 	sendCompactionComplete(t, lm, job, nil)
 
 	job, err = getJob(lm)
 	require.NoError(t, err)
-	require.Equal(t, 2, len(job.tables))
-	require.Equal(t, 1, len(job.tables[0]))
-	require.Equal(t, "sst1-2", string(job.tables[0][0].table.SSTableID))
+	require.Equal(t, 2, len(job.Tables))
+	require.Equal(t, 1, len(job.Tables[0]))
+	require.Equal(t, "sst1-2", string(job.Tables[0][0].Table.SSTableID))
 }
 
 func TestDeleteSSTablesAfterCompaction(t *testing.T) {
@@ -844,7 +844,7 @@ func testChooseLevelToCompact(t *testing.T, level int, adderFunc func(lm *Manage
 	job, err := getJob(lm)
 	require.NoError(t, err)
 
-	require.Equal(t, level, job.levelFrom)
+	require.Equal(t, level, job.LevelFrom)
 }
 
 func TestChooseTableToCompact(t *testing.T) {
@@ -870,8 +870,8 @@ func testChooseTableToCompact(t *testing.T, expectedRatio float64, deleteRatios 
 	job, err := getJob(lm)
 	require.NoError(t, err)
 
-	require.Equal(t, 1, job.levelFrom)
-	require.Equal(t, expectedRatio, job.tables[0][0].table.DeleteRatio)
+	require.Equal(t, 1, job.LevelFrom)
+	require.Equal(t, expectedRatio, job.Tables[0][0].Table.DeleteRatio)
 }
 
 func addTablesToLevel(t *testing.T, lm *Manager, level int, numTables int, deleteRatios ...float64) {
@@ -932,511 +932,6 @@ func populateLevel(t *testing.T, lm *Manager, level int, entries ...TableEntry) 
 	ok, err := lm.ApplyChanges(regBatch, true)
 	require.NoError(t, err)
 	require.True(t, ok)
-}
-
-func TestMergeInterleaved(t *testing.T) {
-	builder1 := newSSTableBuilder()
-	for i := 0; i < 50; i += 2 {
-		builder1.addEntry(fmt.Sprintf("key%05d", i), fmt.Sprintf("val%05d", i))
-	}
-	sst1, err := builder1.build()
-	require.NoError(t, err)
-
-	builder2 := newSSTableBuilder()
-	for i := 50; i < 100; i += 2 {
-		builder2.addEntry(fmt.Sprintf("key%05d", i), fmt.Sprintf("val%05d", i))
-	}
-	sst2, err := builder2.build()
-	require.NoError(t, err)
-
-	builder3 := newSSTableBuilder()
-	for i := 1; i < 50; i += 2 {
-		builder3.addEntry(fmt.Sprintf("key%05d", i), fmt.Sprintf("val%05d", i))
-	}
-	sst3, err := builder3.build()
-	require.NoError(t, err)
-
-	builder4 := newSSTableBuilder()
-	for i := 51; i < 100; i += 2 {
-		builder4.addEntry(fmt.Sprintf("key%05d", i), fmt.Sprintf("val%05d", i))
-	}
-	sst4, err := builder4.build()
-	require.NoError(t, err)
-
-	res, err := mergeSSTables(common.DataFormatV1,
-		[][]tableToMerge{{{sst: sst1}, {sst: sst2}}, {{sst: sst3}, {sst: sst4}}}, true,
-		1300, math.MaxInt64, "", nil, 0)
-	require.NoError(t, err)
-	require.Equal(t, 4, len(res))
-	for i := 0; i < 4; i++ {
-		require.Equal(t, 25, res[i].sst.NumEntries())
-	}
-
-	checkKVsInRange(t, "val", res[0].sst, 0, 25)
-	checkKVsInRange(t, "val", res[1].sst, 25, 50)
-	checkKVsInRange(t, "val", res[2].sst, 50, 75)
-	checkKVsInRange(t, "val", res[3].sst, 75, 100)
-}
-
-func TestMergeNoOverlap(t *testing.T) {
-	builder1 := newSSTableBuilder()
-	for i := 0; i < 25; i++ {
-		builder1.addEntry(fmt.Sprintf("key%05d", i), fmt.Sprintf("val%05d", i))
-	}
-	sst1, err := builder1.build()
-	require.NoError(t, err)
-
-	builder2 := newSSTableBuilder()
-	for i := 25; i < 50; i++ {
-		builder2.addEntry(fmt.Sprintf("key%05d", i), fmt.Sprintf("val%05d", i))
-	}
-	sst2, err := builder2.build()
-	require.NoError(t, err)
-
-	builder3 := newSSTableBuilder()
-	for i := 50; i < 75; i++ {
-		builder3.addEntry(fmt.Sprintf("key%05d", i), fmt.Sprintf("val%05d", i))
-	}
-	sst3, err := builder3.build()
-	require.NoError(t, err)
-
-	builder4 := newSSTableBuilder()
-	for i := 75; i < 100; i++ {
-		builder4.addEntry(fmt.Sprintf("key%05d", i), fmt.Sprintf("val%05d", i))
-	}
-	sst4, err := builder4.build()
-	require.NoError(t, err)
-
-	res, err := mergeSSTables(common.DataFormatV1,
-		[][]tableToMerge{{{sst: sst1}, {sst: sst2}}, {{sst: sst3}, {sst: sst4}}}, true,
-		1300, math.MaxInt64, "", nil, 0)
-	require.NoError(t, err)
-	require.Equal(t, 4, len(res))
-	for i := 0; i < 4; i++ {
-		require.Equal(t, 25, res[i].sst.NumEntries())
-	}
-
-	checkKVsInRange(t, "val", res[0].sst, 0, 25)
-	checkKVsInRange(t, "val", res[1].sst, 25, 50)
-	checkKVsInRange(t, "val", res[2].sst, 50, 75)
-	checkKVsInRange(t, "val", res[3].sst, 75, 100)
-}
-
-func TestOverwriteEntriesWithLaterVersionFirst(t *testing.T) {
-	builder1 := newSSTableBuilder()
-	for i := 0; i < 25; i++ {
-		builder1.addEntryWithVersion(fmt.Sprintf("key%05d", i), fmt.Sprintf("val%05d", i), 10)
-	}
-	sst1, err := builder1.build()
-	require.NoError(t, err)
-
-	builder2 := newSSTableBuilder()
-	for i := 25; i < 50; i++ {
-		builder2.addEntryWithVersion(fmt.Sprintf("key%05d", i), fmt.Sprintf("val%05d", i), 10)
-	}
-	sst2, err := builder2.build()
-	require.NoError(t, err)
-
-	builder3 := newSSTableBuilder()
-	for i := 25; i < 50; i++ {
-		builder3.addEntryWithVersion(fmt.Sprintf("key%05d", i), fmt.Sprintf("bal%05d", i), 20)
-	}
-	sst3, err := builder3.build()
-	require.NoError(t, err)
-
-	builder4 := newSSTableBuilder()
-	for i := 50; i < 75; i++ {
-		builder4.addEntryWithVersion(fmt.Sprintf("key%05d", i), fmt.Sprintf("bal%05d", i), 20)
-	}
-	sst4, err := builder4.build()
-	require.NoError(t, err)
-
-	res, err := mergeSSTables(common.DataFormatV1,
-		[][]tableToMerge{{{sst: sst1}, {sst: sst2}}, {{sst: sst3}, {sst: sst4}}}, true,
-		maxTableSize, math.MaxInt64, "", nil, 0)
-	require.NoError(t, err)
-	require.Equal(t, 3, len(res))
-	for i := 0; i < 3; i++ {
-		require.Equal(t, 25, res[i].sst.NumEntries())
-	}
-
-	checkKVsInRange(t, "val", res[0].sst, 0, 25)
-	checkKVsInRange(t, "bal", res[1].sst, 25, 50)
-	checkKVsInRange(t, "bal", res[2].sst, 50, 75)
-}
-
-func TestOverwriteEntriesWithLaterVersionLast(t *testing.T) {
-	builder1 := newSSTableBuilder()
-	for i := 0; i < 25; i++ {
-		builder1.addEntryWithVersion(fmt.Sprintf("key%05d", i), fmt.Sprintf("val%05d", i), 10)
-	}
-	sst1, err := builder1.build()
-	require.NoError(t, err)
-
-	builder2 := newSSTableBuilder()
-	for i := 25; i < 50; i++ {
-		builder2.addEntryWithVersion(fmt.Sprintf("key%05d", i), fmt.Sprintf("val%05d", i), 10)
-	}
-	sst2, err := builder2.build()
-	require.NoError(t, err)
-
-	builder3 := newSSTableBuilder()
-	for i := 25; i < 50; i++ {
-		builder3.addEntryWithVersion(fmt.Sprintf("key%05d", i), fmt.Sprintf("bal%05d", i), 20)
-	}
-	sst3, err := builder3.build()
-	require.NoError(t, err)
-
-	builder4 := newSSTableBuilder()
-	for i := 50; i < 75; i++ {
-		builder4.addEntryWithVersion(fmt.Sprintf("key%05d", i), fmt.Sprintf("bal%05d", i), 20)
-	}
-	sst4, err := builder4.build()
-	require.NoError(t, err)
-
-	res, err := mergeSSTables(common.DataFormatV1, [][]tableToMerge{{{sst: sst1}, {sst: sst2}}, {{sst: sst3}, {sst: sst4}}},
-		true, maxTableSize, math.MaxInt64, "", nil, 0)
-	require.NoError(t, err)
-	require.Equal(t, 3, len(res))
-	for i := 0; i < 3; i++ {
-		require.Equal(t, 25, res[i].sst.NumEntries())
-	}
-
-	checkKVsInRange(t, "val", res[0].sst, 0, 25)
-	checkKVsInRange(t, "bal", res[1].sst, 25, 50)
-	checkKVsInRange(t, "bal", res[2].sst, 50, 75)
-}
-
-func TestMergePreserveTombstones(t *testing.T) {
-	builder1 := newSSTableBuilder()
-	builder1.addEntry("key00000", "val00000")
-	builder1.addTombstone("key00001")
-	sst1, err := builder1.build()
-	require.NoError(t, err)
-
-	builder2 := newSSTableBuilder()
-	builder2.addEntry("key00002", "val00002")
-	builder2.addTombstone("key00003")
-	sst2, err := builder2.build()
-	require.NoError(t, err)
-
-	builder3 := newSSTableBuilder()
-	builder3.addTombstone("key00000")
-	builder3.addEntry("key00001", "val00001")
-	sst3, err := builder3.build()
-	require.NoError(t, err)
-
-	builder4 := newSSTableBuilder()
-	builder4.addTombstone("key00002")
-	builder4.addEntry("key00003", "val00003")
-	sst4, err := builder4.build()
-	require.NoError(t, err)
-
-	res, err := mergeSSTables(common.DataFormatV1,
-		[][]tableToMerge{{{sst: sst1}, {sst: sst2}}, {{sst: sst3}, {sst: sst4}}}, true, maxTableSize,
-		math.MaxInt64, "", nil, 0)
-	require.NoError(t, err)
-	require.Equal(t, 1, len(res))
-	checkKVs(t, res[0].sst, "val", 0, 0, 1, -1, 2, 2, 3, -1)
-}
-
-func TestMergePreserveTombstonesAllEntriesRemoved(t *testing.T) {
-	builder1 := newSSTableBuilder()
-	builder1.addEntryWithVersion("key00000", "val00000", 1)
-	builder1.addTombstoneWithVersion("key00001", 3)
-	sst1, err := builder1.build()
-	require.NoError(t, err)
-
-	builder2 := newSSTableBuilder()
-	builder2.addEntryWithVersion("key00002", "val00002", 1)
-	builder2.addTombstoneWithVersion("key00003", 3)
-	sst2, err := builder2.build()
-	require.NoError(t, err)
-
-	builder3 := newSSTableBuilder()
-	builder3.addTombstoneWithVersion("key00000", 2)
-	builder3.addEntryWithVersion("key00001", "val00001", 2)
-	sst3, err := builder3.build()
-	require.NoError(t, err)
-
-	builder4 := newSSTableBuilder()
-	builder4.addTombstoneWithVersion("key00002", 2)
-	builder4.addEntryWithVersion("key00003", "val00003", 2)
-	sst4, err := builder4.build()
-	require.NoError(t, err)
-
-	res, err := mergeSSTables(common.DataFormatV1, [][]tableToMerge{{{sst: sst1}, {sst: sst2}}, {{sst: sst3}, {sst: sst4}}},
-		true, maxTableSize, math.MaxInt64, "", nil, 0)
-	require.NoError(t, err)
-	require.Equal(t, 1, len(res))
-
-	// just the tombstones should remain
-	checkKVs(t, res[0].sst, "val", 0, -1, 1, -1, 2, -1, 3, -1)
-}
-
-func TestMergePreserveTombstonesNotAllEntriesRemoved(t *testing.T) {
-	builder1 := newSSTableBuilder()
-	builder1.addEntryWithVersion("key00000", "val00000", 1)
-	builder1.addTombstoneWithVersion("key00001", 1)
-	sst1, err := builder1.build()
-	require.NoError(t, err)
-
-	builder2 := newSSTableBuilder()
-	builder2.addEntryWithVersion("key00002", "val00002", 1)
-	builder2.addTombstoneWithVersion("key00003", 1)
-	sst2, err := builder2.build()
-	require.NoError(t, err)
-
-	builder3 := newSSTableBuilder()
-	builder3.addTombstoneWithVersion("key00000", 2)
-	builder3.addEntryWithVersion("key00001", "val00001", 2)
-	sst3, err := builder3.build()
-	require.NoError(t, err)
-
-	builder4 := newSSTableBuilder()
-	builder4.addTombstoneWithVersion("key00002", 2)
-	builder4.addEntryWithVersion("key00003", "val00003", 2)
-	sst4, err := builder4.build()
-	require.NoError(t, err)
-
-	res, err := mergeSSTables(common.DataFormatV1, [][]tableToMerge{{{sst: sst1}, {sst: sst2}}, {{sst: sst3}, {sst: sst4}}},
-		true, maxTableSize, math.MaxInt64, "", nil, 0)
-	require.NoError(t, err)
-	require.Equal(t, 1, len(res))
-
-	checkKVs(t, res[0].sst, "val", 0, -1, 1, 1, 2, -1, 3, 3)
-}
-
-func TestMergeIntoMultipleTables(t *testing.T) {
-	maxTableSize := 1000
-	numTables := 10
-
-	var ssts []*sst.SSTable
-	var tablesToMerge []tableToMerge
-	i := 0
-	for len(ssts) < numTables {
-		builder := newSSTableBuilder()
-		size := 0
-		for {
-			key := fmt.Sprintf("xxxxxxxxxxxxxxxxsssssssskey%05d", i)
-			value := fmt.Sprintf("val%05d", i)
-			builder.addEntryWithVersion(key, value, 1)
-			i++
-			size += 12 + 2*(len(key)+8) + len(value)
-			if size >= maxTableSize {
-				break
-			}
-		}
-		ssTable, err := builder.build()
-		require.NoError(t, err)
-		ssts = append(ssts, ssTable)
-		tablesToMerge = append(tablesToMerge, tableToMerge{sst: ssTable})
-	}
-
-	res, err := mergeSSTables(common.DataFormatV1, [][]tableToMerge{tablesToMerge}, true, maxTableSize, math.MaxInt64, "", nil, 0)
-	require.NoError(t, err)
-	require.Equal(t, numTables, len(res))
-
-	i = 0
-	for j := 0; j < numTables; j++ {
-		iter, err := res[j].sst.NewIterator(nil, nil)
-		require.NoError(t, err)
-		for {
-			valid, curr, err := iter.Next()
-			require.NoError(t, err)
-			if !valid {
-				break
-			}
-			expectedKey := encoding2.EncodeVersion([]byte(fmt.Sprintf("xxxxxxxxxxxxxxxxsssssssskey%05d", i)), 1)
-			expectedValue := []byte(fmt.Sprintf("val%05d", i))
-			require.Equal(t, expectedKey, curr.Key)
-			require.Equal(t, expectedValue, curr.Value)
-			i++
-		}
-	}
-}
-
-func TestMergeSameKeysDifferentVersions(t *testing.T) {
-
-	maxTableSize := 1000
-	numTables := 10
-
-	var ssts []*sst.SSTable
-	var tablesToMerge []tableToMerge
-	i := 10000
-	key := "xxxxxxxxxxxxxxxxsssssssskey00001"
-	// We fill tables with same key but different versions
-	for len(ssts) < numTables {
-		builder := newSSTableBuilder()
-		size := 0
-		for {
-			value := fmt.Sprintf("val%05d", i)
-			builder.addEntryWithVersion(key, value, uint64(i))
-			i--
-			size += 12 + 2*(len(key)+8) + len(value)
-			if size >= maxTableSize {
-				break
-			}
-		}
-		ssTable, err := builder.build()
-		require.NoError(t, err)
-		ssts = append(ssts, ssTable)
-		tablesToMerge = append(tablesToMerge, tableToMerge{sst: ssTable})
-	}
-
-	res, err := mergeSSTables(common.DataFormatV1, [][]tableToMerge{tablesToMerge}, true, maxTableSize, math.MaxInt64, "", nil, 0)
-	require.NoError(t, err)
-	// We never split different versions of same key across tables, so one table should be produced.
-	require.Equal(t, 1, len(res))
-
-	i = 10000
-	iter, err := res[0].sst.NewIterator(nil, nil)
-	require.NoError(t, err)
-	for {
-		valid, curr, err := iter.Next()
-		require.NoError(t, err)
-		if !valid {
-			break
-		}
-		expectedKey := encoding2.EncodeVersion([]byte(key), uint64(i))
-		expectedValue := []byte(fmt.Sprintf("val%05d", i))
-		require.Equal(t, expectedKey, curr.Key)
-		require.Equal(t, expectedValue, curr.Value)
-		i--
-	}
-}
-
-func TestMergeNotPreserveTombstonesAllEntriesRemoved(t *testing.T) {
-	builder1 := newSSTableBuilder()
-	builder1.addEntryWithVersion("key00000", "val00000", 1)
-	builder1.addTombstoneWithVersion("key00001", 3)
-	sst1, err := builder1.build()
-	require.NoError(t, err)
-
-	builder2 := newSSTableBuilder()
-	builder2.addEntryWithVersion("key00002", "val00002", 1)
-	builder2.addTombstoneWithVersion("key00003", 3)
-	sst2, err := builder2.build()
-	require.NoError(t, err)
-
-	builder3 := newSSTableBuilder()
-	builder3.addTombstoneWithVersion("key00000", 2)
-	builder3.addEntryWithVersion("key00001", "val00001", 2)
-	sst3, err := builder3.build()
-	require.NoError(t, err)
-
-	builder4 := newSSTableBuilder()
-	builder4.addTombstoneWithVersion("key00002", 2)
-	builder4.addEntryWithVersion("key00003", "val00003", 2)
-	sst4, err := builder4.build()
-	require.NoError(t, err)
-
-	res, err := mergeSSTables(common.DataFormatV1, [][]tableToMerge{{{sst: sst1}, {sst: sst2}}, {{sst: sst3}, {sst: sst4}}},
-		false, maxTableSize, math.MaxInt64, "", nil, 0)
-	require.NoError(t, err)
-	require.Equal(t, 0, len(res))
-}
-
-func TestMergeNotPreserveTombstonesNotAllEntriesRemoved(t *testing.T) {
-	builder1 := newSSTableBuilder()
-	builder1.addEntryWithVersion("key00000", "val00000", 1)
-	builder1.addTombstoneWithVersion("key00001", 1)
-	sst1, err := builder1.build()
-	require.NoError(t, err)
-
-	builder2 := newSSTableBuilder()
-	builder2.addEntryWithVersion("key00002", "val00002", 1)
-	builder2.addTombstoneWithVersion("key00003", 1)
-	sst2, err := builder2.build()
-	require.NoError(t, err)
-
-	builder3 := newSSTableBuilder()
-	builder3.addTombstoneWithVersion("key00000", 2)
-	builder3.addEntryWithVersion("key00001", "val00001", 2)
-	sst3, err := builder3.build()
-	require.NoError(t, err)
-
-	builder4 := newSSTableBuilder()
-	builder4.addTombstoneWithVersion("key00002", 2)
-	builder4.addEntryWithVersion("key00003", "val00003", 2)
-	sst4, err := builder4.build()
-	require.NoError(t, err)
-
-	res, err := mergeSSTables(common.DataFormatV1, [][]tableToMerge{{{sst: sst1}, {sst: sst2}}, {{sst: sst3}, {sst: sst4}}},
-		false, maxTableSize, math.MaxInt64, "", nil, 0)
-	require.NoError(t, err)
-	require.Equal(t, 1, len(res))
-
-	checkKVs(t, res[0].sst, "val", 1, 1, 3, 3)
-}
-
-func TestMergeDeadVersions(t *testing.T) {
-	builder1 := newSSTableBuilder()
-	for i := 0; i < 10; i++ {
-		key := fmt.Sprintf("key-%05d", i)
-		val := fmt.Sprintf("val-%05d", i)
-		builder1.addEntryWithVersion(key, val, uint64(i))
-	}
-	deadRange1 := VersionRange{
-		VersionStart: 3,
-		VersionEnd:   5,
-	}
-	deadRange2 := VersionRange{
-		VersionStart: 13,
-		VersionEnd:   17,
-	}
-	builder2 := newSSTableBuilder()
-	for i := 10; i < 20; i++ {
-		key := fmt.Sprintf("key-%05d", i)
-		val := fmt.Sprintf("val-%05d", i)
-		builder2.addEntryWithVersion(key, val, uint64(i))
-	}
-	sst1, err := builder1.build()
-	require.NoError(t, err)
-	sst2, err := builder2.build()
-	require.NoError(t, err)
-
-	tableToMerge1 := tableToMerge{
-		deadVersionRanges: []VersionRange{deadRange1, deadRange2},
-		sst:               sst1,
-	}
-	tableToMerge2 := tableToMerge{
-		deadVersionRanges: []VersionRange{deadRange1, deadRange2},
-		sst:               sst2,
-	}
-
-	res, err := mergeSSTables(common.DataFormatV1, [][]tableToMerge{{tableToMerge1}, {tableToMerge2}},
-		false, 3500, math.MaxInt64, "", nil, 0)
-	require.NoError(t, err)
-	require.Equal(t, 1, len(res))
-
-	iter, err := res[0].sst.NewIterator(nil, nil)
-	require.NoError(t, err)
-	i := 0
-	for i < 20 {
-		valid, entry, err := iter.Next()
-		require.NoError(t, err)
-		if !valid {
-			break
-		}
-		ver := math.MaxUint64 - binary.BigEndian.Uint64(entry.Key[len(entry.Key)-8:])
-		require.Equal(t, uint64(i), ver)
-
-		keyNoVer := entry.Key[:len(entry.Key)-8]
-		expectedKey := []byte(fmt.Sprintf("key-%05d", i))
-
-		require.Equal(t, expectedKey, keyNoVer)
-
-		i++
-
-		if i == 3 {
-			i = 6
-		} else if i == 13 {
-			i = 18
-		}
-	}
-	valid, _, _ := iter.Next()
-	require.False(t, valid)
 }
 
 func TestScoreHeap(t *testing.T) {
@@ -1596,18 +1091,18 @@ func TestRemoveExpiredEntriesIterator(t *testing.T) {
 
 func TestSerializeDeserializeCompactionJob(t *testing.T) {
 	job1 := CompactionJob{
-		id:        uuid.New().String(),
-		levelFrom: 3,
-		tables: [][]tableToCompact{
+		Id:        uuid.New().String(),
+		LevelFrom: 3,
+		Tables: [][]TableToCompact{
 			{
-				{level: 2, table: &TableEntry{
+				{Level: 2, Table: &TableEntry{
 					SSTableID:   []byte("sst1"),
 					RangeStart:  []byte("key0"),
 					RangeEnd:    []byte("key9"),
 					DeleteRatio: 0.43,
 				},
 				},
-				{level: 2, table: &TableEntry{
+				{Level: 2, Table: &TableEntry{
 					SSTableID:   []byte("sst2"),
 					RangeStart:  []byte("key9"),
 					RangeEnd:    []byte("key10"),
@@ -1615,13 +1110,13 @@ func TestSerializeDeserializeCompactionJob(t *testing.T) {
 				}},
 			},
 			{
-				{level: 3, table: &TableEntry{
+				{Level: 3, Table: &TableEntry{
 					SSTableID:   []byte("sst3"),
 					RangeStart:  []byte("key3"),
 					RangeEnd:    []byte("key12"),
 					DeleteRatio: 0.32,
 				}},
-				{level: 3, table: &TableEntry{
+				{Level: 3, Table: &TableEntry{
 					SSTableID:   []byte("sst4"),
 					RangeStart:  []byte("key20"),
 					RangeEnd:    []byte("key30"),
@@ -1629,10 +1124,10 @@ func TestSerializeDeserializeCompactionJob(t *testing.T) {
 				}},
 			},
 		},
-		isMove:             true,
-		preserveTombstones: true,
-		scheduleTime:       123456,
-		serverTime:         32476374634,
+		IsMove:             true,
+		PreserveTombstones: true,
+		ScheduleTime:       123456,
+		ServerTime:         32476374634,
 	}
 
 	buff := job1.Serialize(nil)
@@ -1640,39 +1135,39 @@ func TestSerializeDeserializeCompactionJob(t *testing.T) {
 	job2.Deserialize(buff, 0)
 	require.Equal(t, job1, job2)
 
-	job1.isMove = false
+	job1.IsMove = false
 	buff = job1.Serialize(nil)
 	var job3 CompactionJob
 	job3.Deserialize(buff, 0)
 	require.Equal(t, job1, job3)
 }
 
-func TestSerializeDeserializeCompactionResult(t *testing.T) {
-	res := CompactionResult{
-		id: uuid.New().String(),
-		newTables: []TableEntry{
-			{
-				SSTableID:   []byte("sst1"),
-				RangeStart:  []byte("key0"),
-				RangeEnd:    []byte("key9"),
-				DeleteRatio: 0.11,
-			},
-			{
-				SSTableID:   []byte("sst2"),
-				RangeStart:  []byte("key10"),
-				RangeEnd:    []byte("key19"),
-				DeleteRatio: 0.21,
-			},
-		},
-	}
-	var buff []byte
-	buff = res.Serialize(buff)
-
-	var res2 CompactionResult
-	res2.Deserialize(buff, 0)
-
-	require.Equal(t, res, res2)
-}
+//func TestSerializeDeserializeCompactionResult(t *testing.T) {
+//	res := CompactionResult{
+//		id: uuid.New().String(),
+//		newTables: []TableEntry{
+//			{
+//				SSTableID:   []byte("sst1"),
+//				RangeStart:  []byte("key0"),
+//				RangeEnd:    []byte("key9"),
+//				DeleteRatio: 0.11,
+//			},
+//			{
+//				SSTableID:   []byte("sst2"),
+//				RangeStart:  []byte("key10"),
+//				RangeEnd:    []byte("key19"),
+//				DeleteRatio: 0.21,
+//			},
+//		},
+//	}
+//	var buff []byte
+//	buff = res.Serialize(buff)
+//
+//	var res2 CompactionResult
+//	res2.Deserialize(buff, 0)
+//
+//	require.Equal(t, res, res2)
+//}
 
 func TestCompactionTriggers(t *testing.T) {
 	l0Trigger := 8
@@ -1797,8 +1292,8 @@ func TestNoPreserveTombstonesWhenTableCompactedToLastLevelVersionsFlushed(t *tes
 	job, err := getJob(lm)
 	require.NoError(t, err)
 
-	require.Equal(t, 1, job.levelFrom)
-	require.Equal(t, false, job.preserveTombstones)
+	require.Equal(t, 1, job.LevelFrom)
+	require.Equal(t, false, job.PreserveTombstones)
 }
 
 func TestNoPreserveTombstonesWhenTableCompactedToLastLevelVersionsNotFlushed(t *testing.T) {
@@ -1819,8 +1314,8 @@ func TestNoPreserveTombstonesWhenTableCompactedToLastLevelVersionsNotFlushed(t *
 	job, err := getJob(lm)
 	require.NoError(t, err)
 
-	require.Equal(t, 1, job.levelFrom)
-	require.Equal(t, true, job.preserveTombstones)
+	require.Equal(t, 1, job.LevelFrom)
+	require.Equal(t, true, job.PreserveTombstones)
 }
 
 func TestClosePollersForConnectionID(t *testing.T) {
@@ -1881,7 +1376,7 @@ func TestJobCreatedWithLastFlushedVersion(t *testing.T) {
 	require.Equal(t, 1, stats.QueuedJobs)
 	job, err := getJob(lm)
 	require.NoError(t, err)
-	require.Equal(t, int64(-1), job.lastFlushedVersion)
+	require.Equal(t, int64(-1), job.LastFlushedVersion)
 
 	err = lm.StoreLastFlushedVersion(100)
 	require.NoError(t, err)
@@ -1895,7 +1390,7 @@ func TestJobCreatedWithLastFlushedVersion(t *testing.T) {
 	require.Equal(t, 1, stats.QueuedJobs)
 	job, err = getJob(lm)
 	require.NoError(t, err)
-	require.Equal(t, int64(100), job.lastFlushedVersion)
+	require.Equal(t, int64(100), job.LastFlushedVersion)
 }
 
 func TestCompactionChooseOldestTablesToCompact(t *testing.T) {
@@ -2003,3 +1498,12 @@ func createLevelEntryForTableEntries(entries []*TableEntry) *levelEntry {
 	}
 	return levEntry
 }
+
+func getTableEntry(lm *Manager, lte levelTableEntry, le *levelEntry) *TableEntry {
+	// Get is normally called with the Manager lock already held so when used in tests we need the lock too or we have
+	// a race condition
+	lm.lock.Lock()
+	defer lm.lock.Unlock()
+	return lte.Get(le)
+}
+

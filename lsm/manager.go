@@ -785,6 +785,44 @@ func (m *Manager) GetStats() Stats {
 	return *statsCopy
 }
 
+func ChangesToApply(newTables []TableEntry, job *CompactionJob) ([]RegistrationEntry, []RegistrationEntry) {
+	var registrations []RegistrationEntry
+	for _, newTable := range newTables {
+		registrations = append(registrations, RegistrationEntry{
+			Level:            job.LevelFrom + 1,
+			TableID:          newTable.SSTableID,
+			KeyStart:         newTable.RangeStart,
+			KeyEnd:           newTable.RangeEnd,
+			MinVersion:       newTable.MinVersion,
+			MaxVersion:       newTable.MaxVersion,
+			DeleteRatio:      newTable.DeleteRatio,
+			NumEntries:       newTable.NumEntries,
+			TableSize:        newTable.Size,
+			AddedTime:        newTable.AddedTime,
+			NumPrefixDeletes: newTable.NumPrefixDeletes,
+		})
+	}
+	var deRegistrations []RegistrationEntry
+	for _, overlapping := range job.Tables {
+		for _, ssTable := range overlapping {
+			deRegistrations = append(deRegistrations, RegistrationEntry{
+				Level:            ssTable.Level,
+				TableID:          ssTable.Table.SSTableID,
+				KeyStart:         ssTable.Table.RangeStart,
+				KeyEnd:           ssTable.Table.RangeEnd,
+				MinVersion:       ssTable.Table.MinVersion,
+				MaxVersion:       ssTable.Table.MaxVersion,
+				DeleteRatio:      ssTable.Table.DeleteRatio,
+				NumEntries:       ssTable.Table.NumEntries,
+				TableSize:        ssTable.Table.Size,
+				NumPrefixDeletes: ssTable.Table.NumPrefixDeletes,
+			})
+		}
+	}
+	return registrations, deRegistrations
+}
+
+
 // Only used in testing
 func (m *Manager) reset() {
 	m.lock.Lock()

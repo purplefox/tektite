@@ -1,4 +1,4 @@
-package lsm
+package cworker
 
 import (
 	"context"
@@ -10,6 +10,7 @@ import (
 	"github.com/spirit-labs/tektite/common"
 	"github.com/spirit-labs/tektite/iteration"
 	log "github.com/spirit-labs/tektite/logger"
+	"github.com/spirit-labs/tektite/lsm"
 	"github.com/spirit-labs/tektite/objstore"
 	"github.com/spirit-labs/tektite/sst"
 	"github.com/spirit-labs/tektite/tabcache"
@@ -27,7 +28,7 @@ func TestCompactionIncrementingData(t *testing.T) {
 	l0CompactionTrigger := 4
 	l1CompactionTrigger := 4
 	levelMultiplier := 10
-	lm, tearDown := setup(t, func(cfg *Conf) {
+	lm, tearDown := setup(t, func(cfg *lsm.Conf) {
 		cfg.L0CompactionTrigger = l0CompactionTrigger
 		cfg.L1CompactionTrigger = l1CompactionTrigger
 		cfg.L0MaxTablesBeforeBlocking = 2 * l0CompactionTrigger
@@ -94,7 +95,7 @@ func TestCompactionOverwritingData(t *testing.T) {
 	l0CompactionTrigger := 4
 	l1CompactionTrigger := 4
 	levelMultiplier := 10
-	lm, tearDown := setup(t, func(cfg *Conf) {
+	lm, tearDown := setup(t, func(cfg *lsm.Conf) {
 		cfg.L0CompactionTrigger = l0CompactionTrigger
 		cfg.L1CompactionTrigger = l1CompactionTrigger
 		cfg.L0MaxTablesBeforeBlocking = 2 * l0CompactionTrigger
@@ -218,7 +219,7 @@ func TestCompactionTombstones(t *testing.T) {
 	l0CompactionTrigger := 4
 	l1CompactionTrigger := 4
 	levelMultiplier := 10
-	lm, tearDown := setup(t, func(cfg *Conf) {
+	lm, tearDown := setup(t, func(cfg *lsm.Conf) {
 		cfg.L0CompactionTrigger = l0CompactionTrigger
 		cfg.L1CompactionTrigger = l1CompactionTrigger
 		cfg.L0MaxTablesBeforeBlocking = 2 * l0CompactionTrigger
@@ -328,7 +329,7 @@ func TestRandomUpdateDeleteData(t *testing.T) {
 	l0CompactionTrigger := 4
 	l1CompactionTrigger := 4
 	levelMultiplier := 10
-	lm, tearDown := setup(t, func(cfg *Conf) {
+	lm, tearDown := setup(t, func(cfg *lsm.Conf) {
 		cfg.L0CompactionTrigger = l0CompactionTrigger
 		cfg.L1CompactionTrigger = l1CompactionTrigger
 		cfg.L0MaxTablesBeforeBlocking = 2 * l0CompactionTrigger
@@ -489,7 +490,7 @@ func TestCompactionExpiredPrefix(t *testing.T) {
 	l0CompactionTrigger := 4
 	l1CompactionTrigger := 4
 	levelMultiplier := 10
-	lm, tearDown := setup(t, func(cfg *Conf) {
+	lm, tearDown := setup(t, func(cfg *lsm.Conf) {
 		cfg.L0CompactionTrigger = l0CompactionTrigger
 		cfg.L1CompactionTrigger = l1CompactionTrigger
 		cfg.L0MaxTablesBeforeBlocking = 2 * l0CompactionTrigger
@@ -574,7 +575,7 @@ func TestCompactionExpiredPrefix(t *testing.T) {
 		tableEntries := levEntry.tableEntries
 		for _, lte := range tableEntries {
 			te := getTableEntry(lm, lte, levEntry)
-			overlap := hasOverlap(prefix1, endRange, te.RangeStart, te.RangeEnd)
+			overlap := lsm.hasOverlap(prefix1, endRange, te.RangeStart, te.RangeEnd)
 			require.False(t, overlap)
 		}
 	}
@@ -584,7 +585,7 @@ func TestCompactionDeadVersions(t *testing.T) {
 	l0CompactionTrigger := 2
 	l1CompactionTrigger := 20
 	levelMultiplier := 10
-	lm, tearDown := setup(t, func(cfg *Conf) {
+	lm, tearDown := setup(t, func(cfg *lsm.Conf) {
 		cfg.L0CompactionTrigger = l0CompactionTrigger
 		cfg.L1CompactionTrigger = l1CompactionTrigger
 		cfg.L0MaxTablesBeforeBlocking = 2 * l0CompactionTrigger
@@ -615,7 +616,7 @@ func TestCompactionDeadVersions(t *testing.T) {
 	addTableWithMinMaxVersion(t, lm, tableName3, smallestKey, largestKey, 1700, 1800)
 
 	// Now register deadversions which includes 1500
-	rng := VersionRange{
+	rng := lsm.VersionRange{
 		VersionStart: 1500,
 		VersionEnd:   1550,
 	}
@@ -660,7 +661,7 @@ func TestCompactionPrefixDeletions(t *testing.T) {
 	l0CompactionTrigger := 4
 	l1CompactionTrigger := 4
 	levelMultiplier := 10
-	lm, tearDown := setup(t, func(cfg *Conf) {
+	lm, tearDown := setup(t, func(cfg *lsm.Conf) {
 		cfg.L0CompactionTrigger = l0CompactionTrigger
 		cfg.L1CompactionTrigger = l1CompactionTrigger
 		cfg.L0MaxTablesBeforeBlocking = 2 * l0CompactionTrigger
@@ -762,7 +763,7 @@ func TestCompactionPrefixDeletions(t *testing.T) {
 			tableEntries := levEntry.tableEntries
 			for _, lte := range tableEntries {
 				te := getTableEntry(lm, lte, levEntry)
-				if hasOverlap(prefixes[1], endRange, te.RangeStart, te.RangeEnd) {
+				if lsm.hasOverlap(prefixes[1], endRange, te.RangeStart, te.RangeEnd) {
 					return false, nil
 				}
 			}
@@ -774,8 +775,8 @@ func TestCompactionPrefixDeletions(t *testing.T) {
 
 }
 
-func setup(t *testing.T, cfgFunc func(cfg *Conf)) (*Manager, func(t *testing.T)) {
-	lm, tearDown := setupLevelManagerWithConfigSetter(t, true, true, cfgFunc)
+func setup(t *testing.T, cfgFunc func(cfg *lsm.Conf)) (*lsm.Manager, func(t *testing.T)) {
+	lm, tearDown := lsm.setupLevelManagerWithConfigSetter(t, true, true, cfgFunc)
 
 	cfg := &conf.Config{}
 	cfg.ApplyDefaults()
@@ -801,14 +802,14 @@ func setup(t *testing.T, cfgFunc func(cfg *Conf)) (*Manager, func(t *testing.T))
 }
 
 type inMemClientFactory struct {
-	lm *Manager
+	lm *lsm.Manager
 }
 
-func (i *inMemClientFactory) CreateLevelManagerClient() Client {
-	return &InMemClient{LevelManager: i.lm}
+func (i *inMemClientFactory) CreateLevelManagerClient() lsm.Client {
+	return &lsm.InMemClient{LevelManager: i.lm}
 }
 
-func createIterator(t *testing.T, lm *Manager, keyStart []byte, keyEnd []byte) *iteration.MergingIterator {
+func createIterator(t *testing.T, lm *lsm.Manager, keyStart []byte, keyEnd []byte) *iteration.MergingIterator {
 	otids, err := lm.QueryTablesInRange(keyStart, keyEnd)
 	require.NoError(t, err)
 	var chainIters []iteration.Iterator
@@ -857,20 +858,20 @@ func buildAndRegisterTableWithKeyRangeAndVersion(t *testing.T, name string, rang
 	table, smallestKey, largestKey, _, _, err := sst.BuildSSTable(common.DataFormatV1, 0, 0, si)
 	require.NoError(t, err)
 	buff := table.Serialize()
-	err = cloudStore.Put(context.Background(), NewConf().SSTableBucketName, name, buff)
+	err = cloudStore.Put(context.Background(), lsm.NewConf().SSTableBucketName, name, buff)
 	require.NoError(t, err)
 	return smallestKey, largestKey
 }
 
-func addTable(t *testing.T, lm *Manager, tableName string, rangeStart []byte, rangeEnd []byte) {
+func addTable(t *testing.T, lm *lsm.Manager, tableName string, rangeStart []byte, rangeEnd []byte) {
 	addTableWithMinMaxVersion(t, lm, tableName, rangeStart, rangeEnd, 0, 0)
 }
 
-func addTableWithMinMaxVersion(t *testing.T, lm *Manager, tableName string, rangeStart []byte, rangeEnd []byte,
+func addTableWithMinMaxVersion(t *testing.T, lm *lsm.Manager, tableName string, rangeStart []byte, rangeEnd []byte,
 	minVersion int, maxVersion int) {
 	addedTime := uint64(time.Now().UTC().UnixMilli())
-	regBatch := RegistrationBatch{
-		Registrations: []RegistrationEntry{
+	regBatch := lsm.RegistrationBatch{
+		Registrations: []lsm.RegistrationEntry{
 			{
 				Level:      0,
 				TableID:    []byte(tableName),
@@ -903,10 +904,515 @@ func addTableWithMinMaxVersion(t *testing.T, lm *Manager, tableName string, rang
 	}
 }
 
-func getTableEntry(lm *Manager, lte levelTableEntry, le *levelEntry) *TableEntry {
+func getTableEntry(lm *lsm.Manager, lte lsm.levelTableEntry, le *lsm.levelEntry) *lsm.TableEntry {
 	// Get is normally called with the Manager lock already held so when used in tests we need the lock too or we have
 	// a race condition
 	lm.lock.Lock()
 	defer lm.lock.Unlock()
 	return lte.Get(le)
+}
+
+func TestMergeInterleaved(t *testing.T) {
+	builder1 := newSSTableBuilder()
+	for i := 0; i < 50; i += 2 {
+		builder1.addEntry(fmt.Sprintf("key%05d", i), fmt.Sprintf("val%05d", i))
+	}
+	sst1, err := builder1.build()
+	require.NoError(t, err)
+
+	builder2 := newSSTableBuilder()
+	for i := 50; i < 100; i += 2 {
+		builder2.addEntry(fmt.Sprintf("key%05d", i), fmt.Sprintf("val%05d", i))
+	}
+	sst2, err := builder2.build()
+	require.NoError(t, err)
+
+	builder3 := newSSTableBuilder()
+	for i := 1; i < 50; i += 2 {
+		builder3.addEntry(fmt.Sprintf("key%05d", i), fmt.Sprintf("val%05d", i))
+	}
+	sst3, err := builder3.build()
+	require.NoError(t, err)
+
+	builder4 := newSSTableBuilder()
+	for i := 51; i < 100; i += 2 {
+		builder4.addEntry(fmt.Sprintf("key%05d", i), fmt.Sprintf("val%05d", i))
+	}
+	sst4, err := builder4.build()
+	require.NoError(t, err)
+
+	res, err := cworker.mergeSSTables(common.DataFormatV1,
+		[][]cworker.tableToMerge{{{sst: sst1}, {sst: sst2}}, {{sst: sst3}, {sst: sst4}}}, true,
+		1300, math.MaxInt64, "", nil, 0)
+	require.NoError(t, err)
+	require.Equal(t, 4, len(res))
+	for i := 0; i < 4; i++ {
+		require.Equal(t, 25, res[i].sst.NumEntries())
+	}
+
+	checkKVsInRange(t, "val", res[0].sst, 0, 25)
+	checkKVsInRange(t, "val", res[1].sst, 25, 50)
+	checkKVsInRange(t, "val", res[2].sst, 50, 75)
+	checkKVsInRange(t, "val", res[3].sst, 75, 100)
+}
+
+func TestMergeNoOverlap(t *testing.T) {
+	builder1 := newSSTableBuilder()
+	for i := 0; i < 25; i++ {
+		builder1.addEntry(fmt.Sprintf("key%05d", i), fmt.Sprintf("val%05d", i))
+	}
+	sst1, err := builder1.build()
+	require.NoError(t, err)
+
+	builder2 := newSSTableBuilder()
+	for i := 25; i < 50; i++ {
+		builder2.addEntry(fmt.Sprintf("key%05d", i), fmt.Sprintf("val%05d", i))
+	}
+	sst2, err := builder2.build()
+	require.NoError(t, err)
+
+	builder3 := newSSTableBuilder()
+	for i := 50; i < 75; i++ {
+		builder3.addEntry(fmt.Sprintf("key%05d", i), fmt.Sprintf("val%05d", i))
+	}
+	sst3, err := builder3.build()
+	require.NoError(t, err)
+
+	builder4 := newSSTableBuilder()
+	for i := 75; i < 100; i++ {
+		builder4.addEntry(fmt.Sprintf("key%05d", i), fmt.Sprintf("val%05d", i))
+	}
+	sst4, err := builder4.build()
+	require.NoError(t, err)
+
+	res, err := cworker.mergeSSTables(common.DataFormatV1,
+		[][]cworker.tableToMerge{{{sst: sst1}, {sst: sst2}}, {{sst: sst3}, {sst: sst4}}}, true,
+		1300, math.MaxInt64, "", nil, 0)
+	require.NoError(t, err)
+	require.Equal(t, 4, len(res))
+	for i := 0; i < 4; i++ {
+		require.Equal(t, 25, res[i].sst.NumEntries())
+	}
+
+	checkKVsInRange(t, "val", res[0].sst, 0, 25)
+	checkKVsInRange(t, "val", res[1].sst, 25, 50)
+	checkKVsInRange(t, "val", res[2].sst, 50, 75)
+	checkKVsInRange(t, "val", res[3].sst, 75, 100)
+}
+
+func TestOverwriteEntriesWithLaterVersionFirst(t *testing.T) {
+	builder1 := newSSTableBuilder()
+	for i := 0; i < 25; i++ {
+		builder1.addEntryWithVersion(fmt.Sprintf("key%05d", i), fmt.Sprintf("val%05d", i), 10)
+	}
+	sst1, err := builder1.build()
+	require.NoError(t, err)
+
+	builder2 := newSSTableBuilder()
+	for i := 25; i < 50; i++ {
+		builder2.addEntryWithVersion(fmt.Sprintf("key%05d", i), fmt.Sprintf("val%05d", i), 10)
+	}
+	sst2, err := builder2.build()
+	require.NoError(t, err)
+
+	builder3 := newSSTableBuilder()
+	for i := 25; i < 50; i++ {
+		builder3.addEntryWithVersion(fmt.Sprintf("key%05d", i), fmt.Sprintf("bal%05d", i), 20)
+	}
+	sst3, err := builder3.build()
+	require.NoError(t, err)
+
+	builder4 := newSSTableBuilder()
+	for i := 50; i < 75; i++ {
+		builder4.addEntryWithVersion(fmt.Sprintf("key%05d", i), fmt.Sprintf("bal%05d", i), 20)
+	}
+	sst4, err := builder4.build()
+	require.NoError(t, err)
+
+	res, err := cworker.mergeSSTables(common.DataFormatV1,
+		[][]cworker.tableToMerge{{{sst: sst1}, {sst: sst2}}, {{sst: sst3}, {sst: sst4}}}, true,
+		maxTableSize, math.MaxInt64, "", nil, 0)
+	require.NoError(t, err)
+	require.Equal(t, 3, len(res))
+	for i := 0; i < 3; i++ {
+		require.Equal(t, 25, res[i].sst.NumEntries())
+	}
+
+	checkKVsInRange(t, "val", res[0].sst, 0, 25)
+	checkKVsInRange(t, "bal", res[1].sst, 25, 50)
+	checkKVsInRange(t, "bal", res[2].sst, 50, 75)
+}
+
+func TestOverwriteEntriesWithLaterVersionLast(t *testing.T) {
+	builder1 := newSSTableBuilder()
+	for i := 0; i < 25; i++ {
+		builder1.addEntryWithVersion(fmt.Sprintf("key%05d", i), fmt.Sprintf("val%05d", i), 10)
+	}
+	sst1, err := builder1.build()
+	require.NoError(t, err)
+
+	builder2 := newSSTableBuilder()
+	for i := 25; i < 50; i++ {
+		builder2.addEntryWithVersion(fmt.Sprintf("key%05d", i), fmt.Sprintf("val%05d", i), 10)
+	}
+	sst2, err := builder2.build()
+	require.NoError(t, err)
+
+	builder3 := newSSTableBuilder()
+	for i := 25; i < 50; i++ {
+		builder3.addEntryWithVersion(fmt.Sprintf("key%05d", i), fmt.Sprintf("bal%05d", i), 20)
+	}
+	sst3, err := builder3.build()
+	require.NoError(t, err)
+
+	builder4 := newSSTableBuilder()
+	for i := 50; i < 75; i++ {
+		builder4.addEntryWithVersion(fmt.Sprintf("key%05d", i), fmt.Sprintf("bal%05d", i), 20)
+	}
+	sst4, err := builder4.build()
+	require.NoError(t, err)
+
+	res, err := cworker.mergeSSTables(common.DataFormatV1, [][]cworker.tableToMerge{{{sst: sst1}, {sst: sst2}}, {{sst: sst3}, {sst: sst4}}},
+		true, maxTableSize, math.MaxInt64, "", nil, 0)
+	require.NoError(t, err)
+	require.Equal(t, 3, len(res))
+	for i := 0; i < 3; i++ {
+		require.Equal(t, 25, res[i].sst.NumEntries())
+	}
+
+	checkKVsInRange(t, "val", res[0].sst, 0, 25)
+	checkKVsInRange(t, "bal", res[1].sst, 25, 50)
+	checkKVsInRange(t, "bal", res[2].sst, 50, 75)
+}
+
+func TestMergePreserveTombstones(t *testing.T) {
+	builder1 := newSSTableBuilder()
+	builder1.addEntry("key00000", "val00000")
+	builder1.addTombstone("key00001")
+	sst1, err := builder1.build()
+	require.NoError(t, err)
+
+	builder2 := newSSTableBuilder()
+	builder2.addEntry("key00002", "val00002")
+	builder2.addTombstone("key00003")
+	sst2, err := builder2.build()
+	require.NoError(t, err)
+
+	builder3 := newSSTableBuilder()
+	builder3.addTombstone("key00000")
+	builder3.addEntry("key00001", "val00001")
+	sst3, err := builder3.build()
+	require.NoError(t, err)
+
+	builder4 := newSSTableBuilder()
+	builder4.addTombstone("key00002")
+	builder4.addEntry("key00003", "val00003")
+	sst4, err := builder4.build()
+	require.NoError(t, err)
+
+	res, err := cworker.mergeSSTables(common.DataFormatV1,
+		[][]cworker.tableToMerge{{{sst: sst1}, {sst: sst2}}, {{sst: sst3}, {sst: sst4}}}, true, maxTableSize,
+		math.MaxInt64, "", nil, 0)
+	require.NoError(t, err)
+	require.Equal(t, 1, len(res))
+	checkKVs(t, res[0].sst, "val", 0, 0, 1, -1, 2, 2, 3, -1)
+}
+
+func TestMergePreserveTombstonesAllEntriesRemoved(t *testing.T) {
+	builder1 := newSSTableBuilder()
+	builder1.addEntryWithVersion("key00000", "val00000", 1)
+	builder1.addTombstoneWithVersion("key00001", 3)
+	sst1, err := builder1.build()
+	require.NoError(t, err)
+
+	builder2 := newSSTableBuilder()
+	builder2.addEntryWithVersion("key00002", "val00002", 1)
+	builder2.addTombstoneWithVersion("key00003", 3)
+	sst2, err := builder2.build()
+	require.NoError(t, err)
+
+	builder3 := newSSTableBuilder()
+	builder3.addTombstoneWithVersion("key00000", 2)
+	builder3.addEntryWithVersion("key00001", "val00001", 2)
+	sst3, err := builder3.build()
+	require.NoError(t, err)
+
+	builder4 := newSSTableBuilder()
+	builder4.addTombstoneWithVersion("key00002", 2)
+	builder4.addEntryWithVersion("key00003", "val00003", 2)
+	sst4, err := builder4.build()
+	require.NoError(t, err)
+
+	res, err := cworker.mergeSSTables(common.DataFormatV1, [][]cworker.tableToMerge{{{sst: sst1}, {sst: sst2}}, {{sst: sst3}, {sst: sst4}}},
+		true, maxTableSize, math.MaxInt64, "", nil, 0)
+	require.NoError(t, err)
+	require.Equal(t, 1, len(res))
+
+	// just the tombstones should remain
+	checkKVs(t, res[0].sst, "val", 0, -1, 1, -1, 2, -1, 3, -1)
+}
+
+func TestMergePreserveTombstonesNotAllEntriesRemoved(t *testing.T) {
+	builder1 := newSSTableBuilder()
+	builder1.addEntryWithVersion("key00000", "val00000", 1)
+	builder1.addTombstoneWithVersion("key00001", 1)
+	sst1, err := builder1.build()
+	require.NoError(t, err)
+
+	builder2 := newSSTableBuilder()
+	builder2.addEntryWithVersion("key00002", "val00002", 1)
+	builder2.addTombstoneWithVersion("key00003", 1)
+	sst2, err := builder2.build()
+	require.NoError(t, err)
+
+	builder3 := newSSTableBuilder()
+	builder3.addTombstoneWithVersion("key00000", 2)
+	builder3.addEntryWithVersion("key00001", "val00001", 2)
+	sst3, err := builder3.build()
+	require.NoError(t, err)
+
+	builder4 := newSSTableBuilder()
+	builder4.addTombstoneWithVersion("key00002", 2)
+	builder4.addEntryWithVersion("key00003", "val00003", 2)
+	sst4, err := builder4.build()
+	require.NoError(t, err)
+
+	res, err := cworker.mergeSSTables(common.DataFormatV1, [][]cworker.tableToMerge{{{sst: sst1}, {sst: sst2}}, {{sst: sst3}, {sst: sst4}}},
+		true, maxTableSize, math.MaxInt64, "", nil, 0)
+	require.NoError(t, err)
+	require.Equal(t, 1, len(res))
+
+	checkKVs(t, res[0].sst, "val", 0, -1, 1, 1, 2, -1, 3, 3)
+}
+
+func TestMergeIntoMultipleTables(t *testing.T) {
+	maxTableSize := 1000
+	numTables := 10
+
+	var ssts []*sst.SSTable
+	var tablesToMerge []cworker.tableToMerge
+	i := 0
+	for len(ssts) < numTables {
+		builder := newSSTableBuilder()
+		size := 0
+		for {
+			key := fmt.Sprintf("xxxxxxxxxxxxxxxxsssssssskey%05d", i)
+			value := fmt.Sprintf("val%05d", i)
+			builder.addEntryWithVersion(key, value, 1)
+			i++
+			size += 12 + 2*(len(key)+8) + len(value)
+			if size >= maxTableSize {
+				break
+			}
+		}
+		ssTable, err := builder.build()
+		require.NoError(t, err)
+		ssts = append(ssts, ssTable)
+		tablesToMerge = append(tablesToMerge, cworker.tableToMerge{sst: ssTable})
+	}
+
+	res, err := cworker.mergeSSTables(common.DataFormatV1, [][]cworker.tableToMerge{tablesToMerge}, true, maxTableSize, math.MaxInt64, "", nil, 0)
+	require.NoError(t, err)
+	require.Equal(t, numTables, len(res))
+
+	i = 0
+	for j := 0; j < numTables; j++ {
+		iter, err := res[j].sst.NewIterator(nil, nil)
+		require.NoError(t, err)
+		for {
+			valid, curr, err := iter.Next()
+			require.NoError(t, err)
+			if !valid {
+				break
+			}
+			expectedKey := encoding2.EncodeVersion([]byte(fmt.Sprintf("xxxxxxxxxxxxxxxxsssssssskey%05d", i)), 1)
+			expectedValue := []byte(fmt.Sprintf("val%05d", i))
+			require.Equal(t, expectedKey, curr.Key)
+			require.Equal(t, expectedValue, curr.Value)
+			i++
+		}
+	}
+}
+
+func TestMergeSameKeysDifferentVersions(t *testing.T) {
+
+	maxTableSize := 1000
+	numTables := 10
+
+	var ssts []*sst.SSTable
+	var tablesToMerge []cworker.tableToMerge
+	i := 10000
+	key := "xxxxxxxxxxxxxxxxsssssssskey00001"
+	// We fill tables with same key but different versions
+	for len(ssts) < numTables {
+		builder := newSSTableBuilder()
+		size := 0
+		for {
+			value := fmt.Sprintf("val%05d", i)
+			builder.addEntryWithVersion(key, value, uint64(i))
+			i--
+			size += 12 + 2*(len(key)+8) + len(value)
+			if size >= maxTableSize {
+				break
+			}
+		}
+		ssTable, err := builder.build()
+		require.NoError(t, err)
+		ssts = append(ssts, ssTable)
+		tablesToMerge = append(tablesToMerge, cworker.tableToMerge{sst: ssTable})
+	}
+
+	res, err := cworker.mergeSSTables(common.DataFormatV1, [][]cworker.tableToMerge{tablesToMerge}, true, maxTableSize, math.MaxInt64, "", nil, 0)
+	require.NoError(t, err)
+	// We never split different versions of same key across tables, so one table should be produced.
+	require.Equal(t, 1, len(res))
+
+	i = 10000
+	iter, err := res[0].sst.NewIterator(nil, nil)
+	require.NoError(t, err)
+	for {
+		valid, curr, err := iter.Next()
+		require.NoError(t, err)
+		if !valid {
+			break
+		}
+		expectedKey := encoding2.EncodeVersion([]byte(key), uint64(i))
+		expectedValue := []byte(fmt.Sprintf("val%05d", i))
+		require.Equal(t, expectedKey, curr.Key)
+		require.Equal(t, expectedValue, curr.Value)
+		i--
+	}
+}
+
+func TestMergeNotPreserveTombstonesAllEntriesRemoved(t *testing.T) {
+	builder1 := newSSTableBuilder()
+	builder1.addEntryWithVersion("key00000", "val00000", 1)
+	builder1.addTombstoneWithVersion("key00001", 3)
+	sst1, err := builder1.build()
+	require.NoError(t, err)
+
+	builder2 := newSSTableBuilder()
+	builder2.addEntryWithVersion("key00002", "val00002", 1)
+	builder2.addTombstoneWithVersion("key00003", 3)
+	sst2, err := builder2.build()
+	require.NoError(t, err)
+
+	builder3 := newSSTableBuilder()
+	builder3.addTombstoneWithVersion("key00000", 2)
+	builder3.addEntryWithVersion("key00001", "val00001", 2)
+	sst3, err := builder3.build()
+	require.NoError(t, err)
+
+	builder4 := newSSTableBuilder()
+	builder4.addTombstoneWithVersion("key00002", 2)
+	builder4.addEntryWithVersion("key00003", "val00003", 2)
+	sst4, err := builder4.build()
+	require.NoError(t, err)
+
+	res, err := cworker.mergeSSTables(common.DataFormatV1, [][]cworker.tableToMerge{{{sst: sst1}, {sst: sst2}}, {{sst: sst3}, {sst: sst4}}},
+		false, maxTableSize, math.MaxInt64, "", nil, 0)
+	require.NoError(t, err)
+	require.Equal(t, 0, len(res))
+}
+
+func TestMergeNotPreserveTombstonesNotAllEntriesRemoved(t *testing.T) {
+	builder1 := newSSTableBuilder()
+	builder1.addEntryWithVersion("key00000", "val00000", 1)
+	builder1.addTombstoneWithVersion("key00001", 1)
+	sst1, err := builder1.build()
+	require.NoError(t, err)
+
+	builder2 := newSSTableBuilder()
+	builder2.addEntryWithVersion("key00002", "val00002", 1)
+	builder2.addTombstoneWithVersion("key00003", 1)
+	sst2, err := builder2.build()
+	require.NoError(t, err)
+
+	builder3 := newSSTableBuilder()
+	builder3.addTombstoneWithVersion("key00000", 2)
+	builder3.addEntryWithVersion("key00001", "val00001", 2)
+	sst3, err := builder3.build()
+	require.NoError(t, err)
+
+	builder4 := newSSTableBuilder()
+	builder4.addTombstoneWithVersion("key00002", 2)
+	builder4.addEntryWithVersion("key00003", "val00003", 2)
+	sst4, err := builder4.build()
+	require.NoError(t, err)
+
+	res, err := cworker.mergeSSTables(common.DataFormatV1, [][]cworker.tableToMerge{{{sst: sst1}, {sst: sst2}}, {{sst: sst3}, {sst: sst4}}},
+		false, maxTableSize, math.MaxInt64, "", nil, 0)
+	require.NoError(t, err)
+	require.Equal(t, 1, len(res))
+
+	checkKVs(t, res[0].sst, "val", 1, 1, 3, 3)
+}
+
+func TestMergeDeadVersions(t *testing.T) {
+	builder1 := newSSTableBuilder()
+	for i := 0; i < 10; i++ {
+		key := fmt.Sprintf("key-%05d", i)
+		val := fmt.Sprintf("val-%05d", i)
+		builder1.addEntryWithVersion(key, val, uint64(i))
+	}
+	deadRange1 := VersionRange{
+		VersionStart: 3,
+		VersionEnd:   5,
+	}
+	deadRange2 := VersionRange{
+		VersionStart: 13,
+		VersionEnd:   17,
+	}
+	builder2 := newSSTableBuilder()
+	for i := 10; i < 20; i++ {
+		key := fmt.Sprintf("key-%05d", i)
+		val := fmt.Sprintf("val-%05d", i)
+		builder2.addEntryWithVersion(key, val, uint64(i))
+	}
+	sst1, err := builder1.build()
+	require.NoError(t, err)
+	sst2, err := builder2.build()
+	require.NoError(t, err)
+
+	tableToMerge1 := cworker.tableToMerge{
+		deadVersionRanges: []VersionRange{deadRange1, deadRange2},
+		sst:               sst1,
+	}
+	tableToMerge2 := cworker.tableToMerge{
+		deadVersionRanges: []VersionRange{deadRange1, deadRange2},
+		sst:               sst2,
+	}
+
+	res, err := cworker.mergeSSTables(common.DataFormatV1, [][]cworker.tableToMerge{{tableToMerge1}, {tableToMerge2}},
+		false, 3500, math.MaxInt64, "", nil, 0)
+	require.NoError(t, err)
+	require.Equal(t, 1, len(res))
+
+	iter, err := res[0].sst.NewIterator(nil, nil)
+	require.NoError(t, err)
+	i := 0
+	for i < 20 {
+		valid, entry, err := iter.Next()
+		require.NoError(t, err)
+		if !valid {
+			break
+		}
+		ver := math.MaxUint64 - binary.BigEndian.Uint64(entry.Key[len(entry.Key)-8:])
+		require.Equal(t, uint64(i), ver)
+
+		keyNoVer := entry.Key[:len(entry.Key)-8]
+		expectedKey := []byte(fmt.Sprintf("key-%05d", i))
+
+		require.Equal(t, expectedKey, keyNoVer)
+
+		i++
+
+		if i == 3 {
+			i = 6
+		} else if i == 13 {
+			i = 18
+		}
+	}
+	valid, _, _ := iter.Next()
+	require.False(t, valid)
 }
