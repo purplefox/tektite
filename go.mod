@@ -33,6 +33,7 @@ require (
 
 require (
 	github.com/apache/arrow/go/v11 v11.0.0
+	github.com/buraksezer/consistent v0.10.0
 	github.com/charmbracelet/lipgloss v0.11.0
 	github.com/chzyer/readline v1.5.1
 	github.com/confluentinc/confluent-kafka-go/v2 v2.5.0

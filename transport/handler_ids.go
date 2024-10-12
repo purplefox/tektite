@@ -11,4 +11,5 @@ const (
 	HandlerIDControllerDeleteTopic
 	HandlerIDMetaLocalCacheTopicAdded
 	HandlerIDMetaLocalCacheTopicDeleted
+	HandlerIDFetchCacheGetTableBytes
 )
