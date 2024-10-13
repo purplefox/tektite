@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"github.com/google/uuid"
 	"github.com/spirit-labs/tektite/cluster"
+	"github.com/spirit-labs/tektite/common"
 	"github.com/spirit-labs/tektite/control"
 	"github.com/spirit-labs/tektite/kafkaserver2"
 	"github.com/spirit-labs/tektite/lsm"
@@ -34,16 +36,19 @@ func NewAgent(cfg Conf, objStore objstore.Client) (*Agent, error) {
 	if err != nil {
 		return nil, err
 	}
-	clusterMembershipFactory := func(address string, listener MembershipListener) ClusterMembership {
-		return cluster.NewMembership(cfg.ClusterMembershipConfig, address, objStore, listener)
+	clusterMembershipFactory := func(id string, data []byte, listener MembershipListener) ClusterMembership {
+		return cluster.NewMembership(cfg.ClusterMembershipConfig, id, data, objStore, listener)
 	}
 	return NewAgentWithFactories(cfg, objStore, socketClient.CreateConnection, transportServer,
 		clusterMembershipFactory)
 }
 
-type ClusterMembershipFactory func(address string, listener MembershipListener) ClusterMembership
+type ClusterMembershipFactory func(id string, data []byte, listener MembershipListener) ClusterMembership
 
 type MembershipListener func(state cluster.MembershipState) error
+
+type MembershipData struct {
+}
 
 type ClusterMembership interface {
 	Start() error
@@ -55,7 +60,13 @@ func NewAgentWithFactories(cfg Conf, objStore objstore.Client, connectionFactory
 	agent := &Agent{
 		cfg: cfg,
 	}
-	agent.controller = control.NewController(cfg.ControllerConf, objStore, connectionFactory, transportServer)
+	membershipData := common.MembershipData{
+		ListenAddress: transportServer.Address(),
+		AZInfo:        cfg.AZInfo,
+	}
+	membershipID := uuid.New().String()
+	agent.controller = control.NewController(cfg.ControllerConf, objStore, connectionFactory, transportServer, membershipID)
+	agent.membership = clusterMembershipFactory(membershipID, membershipData.Serialize(nil), agent.controller.MembershipChanged)
 	topicMetaCache := topicmeta.NewLocalCache(func() (topicmeta.ControllerClient, error) {
 		cl, err := agent.controller.Client()
 		return cl, err
@@ -72,7 +83,7 @@ func NewAgentWithFactories(cfg Conf, objStore objstore.Client, connectionFactory
 	agent.tablePusher = rb
 	agent.kafkaServer = kafkaserver2.NewKafkaServer(cfg.KafkaListenerConfig.Address,
 		cfg.KafkaListenerConfig.TLSConfig, cfg.KafkaListenerConfig.AuthenticationType, agent.newKafkaHandler)
-	agent.membership = clusterMembershipFactory(transportServer.Address(), agent.controller.MembershipChanged)
+
 	agent.transportServer = transportServer
 	clFactory := func() (lsm.ControllerClient, error) {
 		return agent.controller.Client()

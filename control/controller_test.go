@@ -364,7 +364,8 @@ func setupControllersWithObjectStore(t *testing.T, numMembers int,
 		cfg := NewConf()
 		// Set to a high number as we don't have compaction running and don't want to block L0 adds
 		cfg.LsmConf.L0MaxTablesBeforeBlocking = 10000
-		ctrl := NewController(cfg, objStore, localTransports.CreateConnection, transportServer)
+		membershipID := fmt.Sprintf("id-%d", i)
+		ctrl := NewController(cfg, objStore, localTransports.CreateConnection, transportServer, membershipID)
 		err = ctrl.Start()
 		require.NoError(t, err)
 		controllers = append(controllers, ctrl)
@@ -381,8 +382,10 @@ func updateMembership(t *testing.T, clusterVersion int, managers []*Controller, 
 	now := time.Now().UnixMilli()
 	var members []cluster.MembershipEntry
 	for _, memberIndex := range memberIndexes {
+		membershipData := common.MembershipData{ListenAddress: managers[memberIndex].transportServer.Address()}
 		members = append(members, cluster.MembershipEntry{
-			Address:    managers[memberIndex].transportServer.Address(),
+			ID:         fmt.Sprintf("id-%d", memberIndex),
+			Data:       membershipData.Serialize(nil),
 			UpdateTime: now,
 		})
 	}

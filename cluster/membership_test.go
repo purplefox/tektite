@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"fmt"
+	"github.com/google/uuid"
 	"github.com/spirit-labs/tektite/objstore/dev"
 	"github.com/stretchr/testify/require"
 	"math/rand"
@@ -23,10 +24,10 @@ func TestJoinSequential(t *testing.T) {
 	numMembers := 10
 	var receivedStates []*membershipReceivedStates
 	for i := 0; i < numMembers; i++ {
-		address := fmt.Sprintf("address-%d", i)
+		data := []byte(fmt.Sprintf("data-%d", i))
 		receivedState := &membershipReceivedStates{}
 		receivedStates = append(receivedStates, receivedState)
-		membership := NewMembership(createConfig(), address, objStore, receivedState.membershipChanged)
+		membership := NewMembership(createConfig(), uuid.New().String(), data, objStore, receivedState.membershipChanged)
 		err := membership.Start()
 		require.NoError(t, err)
 		memberships = append(memberships, membership)
@@ -42,7 +43,7 @@ func TestJoinSequential(t *testing.T) {
 		require.Equal(t, numMembers, len(state.Members))
 		// should be in order of joining
 		for i, membership2 := range memberships {
-			require.Equal(t, membership2.address, state.Members[i].Address)
+			require.Equal(t, membership2.id, state.Members[i].ID)
 		}
 	}
 	for i, receivedState := range receivedStates {
@@ -51,7 +52,8 @@ func TestJoinSequential(t *testing.T) {
 		for j, membership := range memShips {
 			require.Equal(t, i+j+1, len(membership.Members))
 			for k := i + j; k < len(membership.Members); k++ {
-				require.Equal(t, memberships[k].address, membership.Members[k].Address)
+				require.Equal(t, memberships[k].id, membership.Members[k].ID)
+				require.Equal(t, memberships[k].data, membership.Members[k].Data)
 			}
 		}
 	}
@@ -96,8 +98,8 @@ func TestJoinParallel(t *testing.T) {
 	}()
 	numMembers := 10
 	for i := 0; i < numMembers; i++ {
-		address := fmt.Sprintf("address-%d", i)
-		memberShip := NewMembership(createConfig(), address, objStore, func(state MembershipState) error {
+		data := []byte(fmt.Sprintf("data-%d", i))
+		memberShip := NewMembership(createConfig(), uuid.New().String(), data, objStore, func(state MembershipState) error {
 			return nil
 		})
 		err := memberShip.Start()
@@ -127,10 +129,10 @@ func TestEviction(t *testing.T) {
 	}()
 	numMembers := 5
 	for i := 0; i < numMembers; i++ {
-		address := fmt.Sprintf("address-%d", i)
+		data := []byte(fmt.Sprintf("data-%d", i))
 		cfg := createConfig()
 		cfg.EvictionDuration = 1 * time.Second
-		memberShip := NewMembership(cfg, address, objStore, func(state MembershipState) error {
+		memberShip := NewMembership(cfg, uuid.New().String(), data, objStore, func(state MembershipState) error {
 			return nil
 		})
 		err := memberShip.Start()
@@ -140,7 +142,7 @@ func TestEviction(t *testing.T) {
 	waitForMembers(t, memberships...)
 	for i := 0; i < numMembers-1; i++ {
 		index := rand.Intn(len(memberships))
-		stoppedAddress := memberships[index].address
+		stoppedAddress := memberships[index].id
 		// stop it
 		err := memberships[index].Stop()
 		require.NoError(t, err)
@@ -152,7 +154,7 @@ func TestEviction(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, numMembers+i+1, state.ClusterVersion)
 			for _, member := range state.Members {
-				require.NotEqual(t, stoppedAddress, member.Address)
+				require.NotEqual(t, stoppedAddress, member.ID)
 			}
 		}
 	}
@@ -164,7 +166,7 @@ func TestEviction(t *testing.T) {
 func waitForMembers(t *testing.T, memberships ...*Membership) {
 	allAddresses := map[string]struct{}{}
 	for _, membership := range memberships {
-		allAddresses[membership.address] = struct{}{}
+		allAddresses[membership.id] = struct{}{}
 	}
 	start := time.Now()
 	for {
@@ -174,7 +176,7 @@ func waitForMembers(t *testing.T, memberships ...*Membership) {
 			require.NoError(t, err)
 			if len(state.Members) == len(memberships) {
 				for _, member := range state.Members {
-					_, exists := allAddresses[member.Address]
+					_, exists := allAddresses[member.ID]
 					require.True(t, exists)
 				}
 			} else {

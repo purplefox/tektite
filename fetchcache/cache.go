@@ -2,11 +2,12 @@ package fetchcache
 
 import (
 	"encoding/binary"
-	"github.com/buraksezer/consistent"
 	"github.com/cespare/xxhash/v2"
 	"github.com/dgraph-io/ristretto"
+	"github.com/lafikl/consistent"
 	"github.com/pkg/errors"
 	"github.com/spirit-labs/tektite/cluster"
+	"github.com/spirit-labs/tektite/common"
 	log "github.com/spirit-labs/tektite/logger"
 	"github.com/spirit-labs/tektite/objstore"
 	"github.com/spirit-labs/tektite/transport"
@@ -17,20 +18,25 @@ import (
 
 type Cache struct {
 	lock            sync.RWMutex
-	address         string
 	objStore        objstore.Client
 	connFactory     transport.ConnectionFactory
 	transportServer transport.Server
 	cache           *ristretto.Cache
 	consist         *consistent.Consistent
-	dataBucketName  string
 	connCaches      map[string]*connectionCache
 	members         map[string]struct{}
+	dataBucketName  string
+	azInfo          string
+	stats           CacheStats
 }
 
-// TODO - Availability zone awareness
-func NewCache(address string, objStore objstore.Client, connFactory transport.ConnectionFactory,
-	transportServer transport.Server, maxSizeBytes int, dataBucketName string, partitionCount int) (*Cache, error) {
+type CacheStats struct {
+	Misses int64
+	Hits   int64
+}
+
+func NewCache(objStore objstore.Client, connFactory transport.ConnectionFactory,
+	transportServer transport.Server, maxSizeBytes int, dataBucketName string, partitionCount int, azInfo string) (*Cache, error) {
 	tableSizeEstimate := 16 * 1024 * 1024
 	if maxSizeBytes < tableSizeEstimate {
 		return nil, errors.Errorf("fetch cache maxSizeBytes must be >= %d", tableSizeEstimate)
@@ -45,24 +51,18 @@ func NewCache(address string, objStore objstore.Client, connFactory transport.Co
 		return nil, err
 	}
 
-	cfg := consistent.Config{
-		PartitionCount:    partitionCount,
-		ReplicationFactor: 1,
-		Load:              1.25,
-		Hasher:            hasher{},
-	}
-	consist := consistent.New(nil, cfg)
-
+	// TODO investigate whether this is the right consistent library - it doesn't implement virtual nodes.
+	// Do a test with several members and test distribution.
 	return &Cache{
-		address:         address,
 		objStore:        objStore,
 		connFactory:     connFactory,
 		transportServer: transportServer,
-		cache:           cache,
-		consist:         consist,
-		dataBucketName:  dataBucketName,
 		connCaches:      make(map[string]*connectionCache),
 		members:         make(map[string]struct{}),
+		cache:           cache,
+		consist:         consistent.New(),
+		dataBucketName:  dataBucketName,
+		azInfo:          azInfo,
 	}, nil
 }
 
@@ -78,7 +78,7 @@ func (h hasher) Sum64(data []byte) uint64 {
 func (c *Cache) Start() {
 	c.lock.Lock()
 	defer c.lock.Unlock()
-	c.transportServer.RegisterHandler(transport.HandlerIDControllerRegisterL0Table, c.handleGetTableBytes)
+	c.transportServer.RegisterHandler(transport.HandlerIDFetchCacheGetTableBytes, c.handleGetTableBytes)
 }
 
 func (c *Cache) Stop() {
@@ -92,14 +92,19 @@ func (c *Cache) Stop() {
 func (c *Cache) MembershipChanged(membership cluster.MembershipState) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
-
 	newMembers := make(map[string]struct{}, len(membership.Members))
 	for _, member := range membership.Members {
-		newMembers[member.Address] = struct{}{}
-		_, exists := c.members[member.Address]
+		newMembers[member.ID] = struct{}{}
+		_, exists := c.members[member.ID]
 		if !exists {
 			// member added
-			c.consist.Add(&strMember{address: member.Address})
+			var membershipData common.MembershipData
+			membershipData.Deserialize(member.Data, 0)
+			if membershipData.AZInfo == c.azInfo {
+				// Each AZ has it's own cache so we don't have cross AZ calls when looking up in cache
+				c.consist.Add(membershipData.ListenAddress)
+				//c.consist.Add(&strMember{address: membershipData.ListenAddress})
+			}
 		}
 	}
 	for member := range c.members {
@@ -109,7 +114,6 @@ func (c *Cache) MembershipChanged(membership cluster.MembershipState) {
 			c.consist.Remove(member)
 		}
 	}
-
 	c.members = newMembers
 }
 
@@ -125,7 +129,16 @@ func (c *Cache) GetTableBytes(key []byte) ([]byte, error) {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
 
-	target := c.getTargetForKey(key)
+	target, err := c.getTargetForKey(key)
+	if err != nil {
+		return nil, err
+	}
+
+	if target == c.transportServer.Address() {
+		// Target is this node - we can do a direct call
+		return c.getFromCache(key)
+	}
+
 	conn, err := c.getConnection(target)
 	if err != nil {
 		return nil, err
@@ -145,8 +158,8 @@ func (c *Cache) GetTableBytes(key []byte) ([]byte, error) {
 	return bytes, nil
 }
 
-func (c *Cache) getTargetForKey(key []byte) string {
-	return c.consist.LocateKey(key).String()
+func (c *Cache) getTargetForKey(key []byte) (string, error) {
+	return c.consist.Get(string(key))
 }
 
 func (c *Cache) handleGetTableBytes(_ int, request []byte, responseBuff []byte,
@@ -158,23 +171,37 @@ func (c *Cache) handleGetTableBytes(_ int, request []byte, responseBuff []byte,
 		return responseWriter(nil, err)
 	}
 	lb := binary.BigEndian.Uint32(request[2:])
-	key := string(request[6 : 6+lb])
+	key := request[6 : 6+lb]
 
-	v, ok := c.cache.Get(key)
-	if ok {
-		tableBytes := v.([]byte)
-		return sendBytesResponse(responseWriter, responseBuff, tableBytes)
-	}
-
-	// TODO unavailability retries
-	bytes, err := objstore.GetWithTimeout(c.objStore, c.dataBucketName, key, objStoreCallTimeout)
+	bytes, err := c.getFromCache(key)
 	if err != nil {
-		return err
-	}
-	if len(bytes) > 0 {
-		c.cache.Set(key, bytes, int64(len(bytes)))
+		return responseWriter(nil, err)
 	}
 	return sendBytesResponse(responseWriter, responseBuff, bytes)
+}
+
+func (c *Cache) getFromCache(key []byte) ([]byte, error) {
+	v, ok := c.cache.Get(key)
+	if ok {
+		atomic.AddInt64(&c.stats.Hits, 1)
+		return v.([]byte), nil
+	}
+	// TODO unavailability retries
+	bytes, err := objstore.GetWithTimeout(c.objStore, c.dataBucketName, string(key), objStoreCallTimeout)
+	if err != nil {
+		return nil, err
+	}
+	if len(bytes) > 0 {
+		atomic.AddInt64(&c.stats.Misses, 1)
+		c.cache.Set(key, bytes, int64(len(bytes)))
+	}
+	return bytes, nil
+}
+
+func (c *Cache) GetStats() CacheStats {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	return c.stats
 }
 
 func sendBytesResponse(responseWriter transport.ResponseWriter, responseBuff []byte, tableBytes []byte) error {
@@ -224,18 +251,18 @@ func (c *Cache) createConnCache(address string) *connectionCache {
 
 // TODO maybe combine with the similar connectionCache in fetcher package
 type connectionCache struct {
-	lock          sync.RWMutex
-	address       string
-	clientFactory transport.ConnectionFactory
-	clients       []transport.Connection
-	pos           int64
+	lock        sync.RWMutex
+	address     string
+	connFactory transport.ConnectionFactory
+	connections []*clientWrapper
+	pos         int64
 }
 
 func newConnectionCache(address string, maxConnections int, connFactory transport.ConnectionFactory) *connectionCache {
 	return &connectionCache{
-		address:       address,
-		clients:       make([]transport.Connection, maxConnections),
-		clientFactory: connFactory,
+		address:     address,
+		connections: make([]*clientWrapper, maxConnections),
+		connFactory: connFactory,
 	}
 }
 
@@ -247,60 +274,63 @@ func (cc *connectionCache) getConnection() (transport.Connection, error) {
 	return cc.createClient(index)
 }
 
-func (cc *connectionCache) getCachedConnection() (transport.Connection, int) {
+func (cc *connectionCache) getCachedConnection() (*clientWrapper, int) {
 	cc.lock.RLock()
 	defer cc.lock.RUnlock()
 	pos := atomic.AddInt64(&cc.pos, 1) - 1
-	index := int(pos) % len(cc.clients)
-	return cc.clients[index], index
+	index := int(pos) % len(cc.connections)
+	return cc.connections[index], index
 }
 
-func (cc *connectionCache) createClient(index int) (transport.Connection, error) {
+func (cc *connectionCache) createClient(index int) (*clientWrapper, error) {
 	cc.lock.Lock()
 	defer cc.lock.Unlock()
-	cl := cc.clients[index]
+	cl := cc.connections[index]
 	if cl != nil {
 		return cl, nil
 	}
-	cl, err := cc.clientFactory(cc.address)
+	conn, err := cc.connFactory(cc.address)
 	if err != nil {
 		return nil, err
 	}
-	cc.clients[index] = &clientWrapper{
-		cc:     cc,
-		index:  index,
-		client: cl,
+	cl = &clientWrapper{
+		cc:    cc,
+		index: index,
+		conn:  conn,
 	}
+	cc.connections[index] = cl
 	return cl, nil
 }
 
 func (cc *connectionCache) deleteClient(index int) {
 	cc.lock.Lock()
 	defer cc.lock.Unlock()
-	cc.clients[index] = nil
+	cc.connections[index] = nil
 }
 
 func (cc *connectionCache) close() {
 	cc.lock.Lock()
 	defer cc.lock.Unlock()
-	for _, cc := range cc.clients {
-		if err := cc.Close(); err != nil {
-			log.Warnf("failed to close controller client: %v", err)
+	for _, client := range cc.connections {
+		if client != nil {
+			if err := client.conn.Close(); err != nil {
+				log.Warnf("failed to close connection: %v", err)
+			}
 		}
 	}
 }
 
 type clientWrapper struct {
-	cc     *connectionCache
-	index  int
-	client transport.Connection
+	cc    *connectionCache
+	index int
+	conn  transport.Connection
 }
 
 func (c *clientWrapper) SendRPC(handlerID int, request []byte) ([]byte, error) {
-	return c.client.SendRPC(handlerID, request)
+	return c.conn.SendRPC(handlerID, request)
 }
 
 func (c *clientWrapper) Close() error {
 	c.cc.deleteClient(c.index)
-	return c.client.Close()
+	return c.conn.Close()
 }

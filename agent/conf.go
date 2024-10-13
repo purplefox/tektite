@@ -15,6 +15,7 @@ type Conf struct {
 	PusherConf              pusher.Conf
 	ControllerConf          control.Conf
 	CompactionWorkersConf   lsm.CompactionWorkerServiceConf
+	AZInfo                  string
 }
 
 func NewConf() Conf {

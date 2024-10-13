@@ -37,7 +37,7 @@ func TestNotifications(t *testing.T) {
 		address := uuid.New().String()
 		addresses = append(addresses, address)
 		memberEntries = append(memberEntries, cluster.MembershipEntry{
-			Address: address,
+			ID: address,
 		})
 		localServer, err := transports.NewLocalServer(address)
 		require.NoError(t, err)
