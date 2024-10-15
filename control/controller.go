@@ -156,10 +156,10 @@ func (c *Controller) Client() (Client, error) {
 		return nil, common.NewTektiteErrorf(common.Unavailable, "no members in cluster")
 	}
 	return &client{
-		m:              c,
-		address:        c.currentMembership.Members[0].Address,
-		clusterVersion: c.currentMembership.ClusterVersion,
-		connFactory:    c.connectionFactory,
+		m:             c,
+		address:       c.currentMembership.Members[0].Address,
+		leaderVersion: c.currentMembership.LeaderVersion,
+		connFactory:   c.connectionFactory,
 	}, nil
 }
 
@@ -174,7 +174,7 @@ func (c *Controller) handleRegisterL0Table(_ *transport.ConnectionContext, reque
 	}
 	var req RegisterL0Request
 	req.Deserialize(request, 2)
-	if err := c.checkClusterVersion(req.ClusterVersion); err != nil {
+	if err := c.checkLeaderVersion(req.LeaderVersion); err != nil {
 		return responseWriter(nil, err)
 	}
 	regBatch := lsm.RegistrationBatch{
@@ -210,7 +210,7 @@ func (c *Controller) handleApplyChanges(_ *transport.ConnectionContext, request 
 	}
 	var req ApplyChangesRequest
 	req.Deserialize(request, 2)
-	if err := c.checkClusterVersion(req.ClusterVersion); err != nil {
+	if err := c.checkLeaderVersion(req.LeaderVersion); err != nil {
 		return responseWriter(nil, err)
 	}
 	return c.lsmHolder.ApplyLsmChanges(req.RegBatch, func(err error) error {
@@ -234,7 +234,7 @@ func (c *Controller) handleRegisterTableListener(_ *transport.ConnectionContext,
 	}
 	var req RegisterTableListenerRequest
 	req.Deserialize(request, 2)
-	if err := c.checkClusterVersion(req.ClusterVersion); err != nil {
+	if err := c.checkLeaderVersion(req.LeaderVersion); err != nil {
 		return responseWriter(nil, err)
 	}
 	lro, err := c.offsetsCache.GetLastReadableOffset(req.TopicID, req.PartitionID)
@@ -260,7 +260,7 @@ func (c *Controller) handleQueryTablesInRange(_ *transport.ConnectionContext, re
 	}
 	var req QueryTablesInRangeRequest
 	req.Deserialize(request, 2)
-	if err := c.checkClusterVersion(req.ClusterVersion); err != nil {
+	if err := c.checkLeaderVersion(req.LeaderVersion); err != nil {
 		return responseWriter(nil, err)
 	}
 	res, err := c.lsmHolder.QueryTablesInRange(req.KeyStart, req.KeyEnd)
@@ -282,7 +282,7 @@ func (c *Controller) handleGetOffsets(_ *transport.ConnectionContext, request []
 	}
 	var req GetOffsetsRequest
 	req.Deserialize(request, 2)
-	if err := c.checkClusterVersion(req.ClusterVersion); err != nil {
+	if err := c.checkLeaderVersion(req.LeaderVersion); err != nil {
 		return responseWriter(nil, err)
 	}
 	offs, err := c.offsetsCache.GetOffsets(req.Infos)
@@ -330,7 +330,7 @@ func (c *Controller) handleGetTopicInfo(_ *transport.ConnectionContext, request 
 	}
 	var req GetTopicInfoRequest
 	req.Deserialize(request, 2)
-	if err := c.checkClusterVersion(req.ClusterVersion); err != nil {
+	if err := c.checkLeaderVersion(req.LeaderVersion); err != nil {
 		return responseWriter(nil, err)
 	}
 	info, seq, err := c.topicMetaManager.GetTopicInfo(req.TopicName)
@@ -355,7 +355,7 @@ func (c *Controller) handleCreateTopic(_ *transport.ConnectionContext, request [
 	}
 	var req CreateTopicRequest
 	req.Deserialize(request, 2)
-	if err := c.checkClusterVersion(req.ClusterVersion); err != nil {
+	if err := c.checkLeaderVersion(req.LeaderVersion); err != nil {
 		return responseWriter(nil, err)
 	}
 	err := c.topicMetaManager.CreateTopic(req.Info)
@@ -376,7 +376,7 @@ func (c *Controller) handleDeleteTopic(_ *transport.ConnectionContext, request [
 	}
 	var req DeleteTopicRequest
 	req.Deserialize(request, 2)
-	if err := c.checkClusterVersion(req.ClusterVersion); err != nil {
+	if err := c.checkLeaderVersion(req.LeaderVersion); err != nil {
 		return responseWriter(nil, err)
 	}
 	err := c.topicMetaManager.DeleteTopic(req.TopicName)
@@ -402,9 +402,9 @@ func (c *Controller) checkStarted() error {
 	return nil
 }
 
-func (c *Controller) checkClusterVersion(clusterVersion int) error {
-	if clusterVersion != c.currentMembership.ClusterVersion {
-		// This will occur when a cluster change occurs and a client created from an older cluster version tries
+func (c *Controller) checkLeaderVersion(clusterVersion int) error {
+	if clusterVersion != c.currentMembership.LeaderVersion {
+		// This will occur when a cluster change occurs and a client created from an older leader version tries
 		// to perform an operation. We return an unavailable error which will cause the caller to close the connection
 		// and create a new one, with the correct version
 		return common.NewTektiteErrorf(common.Unavailable, "controller - cluster version mismatch")
