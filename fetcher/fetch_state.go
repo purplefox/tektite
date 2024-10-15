@@ -37,6 +37,7 @@ func newFetchState(batchFetcher *BatchFetcher, req *kafkaprotocol.FetchRequest, 
 		partitionStates: map[int]map[int]*PartitionFetchState{},
 		completionFunc:  completionFunc,
 		readExec:        readExec,
+		first:           true,
 	}
 	fetchState.resp.Responses = make([]kafkaprotocol.FetchResponseFetchableTopicResponse, len(fetchState.req.Topics))
 	recentTables := &fetchState.bf.recentTables
@@ -99,6 +100,7 @@ func (f *FetchState) read() error {
 		return err
 	}
 	if waiting {
+		log.Infof("fetch state %p waiting", f)
 		// We register our partition states to receive notifications when new data arrives
 		// Needs to be done outside lock to prevent deadlock with incoming notification updating iterator
 		return f.bf.recentTables.registerPartitionStates(f.partitionStates)
@@ -167,6 +169,7 @@ outer:
 		// Set a timeout if we haven't already set one - as we need to wait
 		time.AfterFunc(time.Duration(f.req.MaxWaitMs)*time.Millisecond, f.timeout)
 	}
+	log.Infof("fetch state %p - received %d bytes - not sufficient min is %d - so waiting", f, f.bytesFetched, f.req.MinBytes)
 	f.waiting = true
 	return true, nil
 }
@@ -293,20 +296,24 @@ func (p *PartitionFetchState) read() (wouldExceedRequestMax bool, wouldExceedPar
 		if !ok {
 			break
 		}
+		log.Infof("iter got something")
 		batchSize := len(kv.Value)
 		if !p.fs.first {
 			if p.bytesFetched+batchSize > int(p.partitionFetchReq.PartitionMaxBytes) {
 				// Would exceed partition max size
+				log.Infof("would exceed partition max")
 				wouldExceedPartitionMax = true
 				break
 			}
 			if p.fs.bytesFetched+batchSize > int(p.fs.req.MaxBytes) {
+				log.Infof("would exceed req max %d", p.fs.req.MaxBytes)
 				// would exceed total response max size
 				wouldExceedRequestMax = true
 				break
 			}
 		}
 		batches = append(batches, kv.Value)
+		log.Infof("appended batch")
 		p.bytesFetched += batchSize
 		p.fs.bytesFetched += batchSize
 		p.lastReadOffset = kafkaencoding.BaseOffset(kv.Value) + int64(kafkaencoding.NumRecords(kv.Value)) - 1

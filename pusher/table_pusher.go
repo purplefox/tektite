@@ -79,7 +79,7 @@ var log *logger.TektiteLogger
 
 func init() {
 	var err error
-	log, err = logger.GetLoggerWithLevel("pusher", zapcore.DebugLevel)
+	log, err = logger.GetLoggerWithLevel("pusher", zapcore.InfoLevel)
 	if err != nil {
 		panic(err)
 	}

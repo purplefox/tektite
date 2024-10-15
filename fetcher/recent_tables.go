@@ -157,7 +157,8 @@ func (p *PartitionTables) addListener(listener *PartitionFetchState) (*FetchStat
 	defer p.lock.Unlock()
 	for _, entry := range p.listeners {
 		if entry == listener {
-			panic("listener already registered")
+			// Already listening - this would be the case where a partition fetch state in a request waits more than once
+			return nil, nil
 		}
 	}
 	p.listeners = append(p.listeners, listener)
@@ -288,6 +289,8 @@ func (p *PartitionRecentTables) handleTableRegisteredNotification(notification *
 	}
 	p.lock.RLock()
 	defer p.lock.RUnlock()
+
+	log.Infof("table registered notification arrived")
 
 	// Get unique set of fetch states to read
 	fetchStates := map[*FetchState]struct{}{}
