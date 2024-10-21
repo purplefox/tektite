@@ -17,12 +17,13 @@ func TestCacheSingleNode(t *testing.T) {
 	transportServer, err := localTransports.NewLocalServer("server-address-1")
 	require.NoError(t, err)
 
-	bucketName := "test-bucket"
+	cfg := NewConf()
+	cfg.DataBucketName = "test-bucket"
+	cfg.AzInfo = "test-az"
+	cfg.MaxSizeBytes = 16 * 1024 * 1024
+	cfg.MaxConnectionsPerAddress = 100
 
-	az := "test-az"
-
-	cache, err := NewCache(objStore, localTransports.CreateConnection, transportServer, 16*1024*1024,
-		bucketName, 100, az)
+	cache, err := NewCache(objStore, localTransports.CreateConnection, transportServer, cfg)
 	require.NoError(t, err)
 
 	cache.Start()
@@ -30,7 +31,7 @@ func TestCacheSingleNode(t *testing.T) {
 
 	membershipData := common.MembershipData{
 		ListenAddress: transportServer.Address(),
-		AZInfo:        az,
+		AZInfo:        cfg.AzInfo,
 	}
 	cache.MembershipChanged(cluster.MembershipState{
 		ClusterVersion: 1,
@@ -56,7 +57,7 @@ func TestCacheSingleNode(t *testing.T) {
 	require.Equal(t, 0, int(stats.Misses))
 
 	tableBytes := []byte("quwdhiquwhdiquwhdiuqd")
-	err = objStore.Put(context.Background(), bucketName, string(key1), tableBytes)
+	err = objStore.Put(context.Background(), cfg.DataBucketName, string(key1), tableBytes)
 	require.NoError(t, err)
 
 	bytes, err = cache.GetTableBytes(key1)

@@ -1,12 +1,12 @@
 package agent
 
 import (
-	"context"
 	"errors"
 	"github.com/google/uuid"
 	"github.com/spirit-labs/tektite/cluster"
 	"github.com/spirit-labs/tektite/common"
 	"github.com/spirit-labs/tektite/control"
+	"github.com/spirit-labs/tektite/fetchcache"
 	"github.com/spirit-labs/tektite/fetcher"
 	"github.com/spirit-labs/tektite/kafkaserver2"
 	"github.com/spirit-labs/tektite/lsm"
@@ -31,6 +31,7 @@ type Agent struct {
 	membership               ClusterMembership
 	compactionWorkersService *lsm.CompactionWorkerService
 	partitionHashes          *parthash.PartitionHashes
+	fetchCache *fetchcache.Cache
 }
 
 func NewAgent(cfg Conf, objStore objstore.Client) (*Agent, error) {
@@ -73,7 +74,7 @@ func NewAgentWithFactories(cfg Conf, objStore objstore.Client, connectionFactory
 	}
 	membershipData := common.MembershipData{
 		ListenAddress: transportServer.Address(),
-		AZInfo:        cfg.AZInfo,
+		AZInfo:        cfg.FetchCacheConf.AzInfo,
 	}
 	membershipID := uuid.New().String()
 	agent.controller = control.NewController(cfg.ControllerConf, objStore, connectionFactory, transportServer, membershipID)
@@ -99,10 +100,12 @@ func NewAgentWithFactories(cfg Conf, objStore objstore.Client, connectionFactory
 	fetcherClFactory := func() (fetcher.ControlClient, error) {
 		return agent.controller.Client()
 	}
-	getter := &objStoreGetter{
-		bucketName: cfg.FetcherConf.DataBucketName,
-		objStore:   objStore,
+	fetchCache, err := fetchcache.NewCache(objStore, connectionFactory, transportServer, cfg.FetchCacheConf)
+	if err != nil {
+		return nil, err
 	}
+	agent.fetchCache = fetchCache
+	getter := &fetchCacheGetter{fetchCache: fetchCache}
 	bf, err := fetcher.NewBatchFetcher(objStore, topicMetaCache, partitionHashes, fetcherClFactory, getter.get,
 		membershipID, cfg.FetcherConf)
 	if err != nil {
@@ -126,14 +129,12 @@ func NewAgentWithFactories(cfg Conf, objStore objstore.Client, connectionFactory
 	return agent, nil
 }
 
-// temp struct that gets direct from object store - will be replaced when we have fetch cache
-type objStoreGetter struct {
-	bucketName string
-	objStore   objstore.Client
+type fetchCacheGetter struct {
+	fetchCache *fetchcache.Cache
 }
 
-func (o *objStoreGetter) get(tableID sst.SSTableID) (*sst.SSTable, error) {
-	bytes, err := o.objStore.Get(context.Background(), o.bucketName, string(tableID))
+func (o *fetchCacheGetter) get(tableID sst.SSTableID) (*sst.SSTable, error) {
+	bytes, err := o.fetchCache.GetTableBytes(tableID)
 	if err != nil {
 		return nil, err
 	}
@@ -173,6 +174,7 @@ func (a *Agent) Start() error {
 	if err := a.tablePusher.Start(); err != nil {
 		return err
 	}
+	a.fetchCache.Start()
 	if err := a.batchFetcher.Start(); err != nil {
 		return err
 	}
@@ -207,6 +209,7 @@ func (a *Agent) Stop() error {
 	if err := a.tablePusher.Stop(); err != nil {
 		return err
 	}
+	a.fetchCache.Stop()
 	if err := a.membership.Stop(); err != nil {
 		return err
 	}

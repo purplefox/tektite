@@ -2,9 +2,7 @@ package fetchcache
 
 import (
 	"encoding/binary"
-	"github.com/cespare/xxhash/v2"
 	"github.com/dgraph-io/ristretto"
-	"github.com/lafikl/consistent"
 	"github.com/pkg/errors"
 	"github.com/spirit-labs/tektite/cluster"
 	"github.com/spirit-labs/tektite/common"
@@ -22,11 +20,10 @@ type Cache struct {
 	connFactory     transport.ConnectionFactory
 	transportServer transport.Server
 	cache           *ristretto.Cache
-	consist         *consistent.Consistent
+	consist         *ConsistentHash
 	connCaches      map[string]*connectionCache
 	members         map[string]struct{}
-	dataBucketName  string
-	azInfo          string
+	cfg Conf
 	stats           CacheStats
 }
 
@@ -36,23 +33,20 @@ type CacheStats struct {
 }
 
 func NewCache(objStore objstore.Client, connFactory transport.ConnectionFactory,
-	transportServer transport.Server, maxSizeBytes int, dataBucketName string, partitionCount int, azInfo string) (*Cache, error) {
+	transportServer transport.Server, cfg Conf) (*Cache, error) {
 	tableSizeEstimate := 16 * 1024 * 1024
-	if maxSizeBytes < tableSizeEstimate {
+	if cfg.MaxSizeBytes < tableSizeEstimate {
 		return nil, errors.Errorf("fetch cache maxSizeBytes must be >= %d", tableSizeEstimate)
 	}
-	maxItemsEstimate := maxSizeBytes / tableSizeEstimate
+	maxItemsEstimate := cfg.MaxSizeBytes / tableSizeEstimate
 	cache, err := ristretto.NewCache(&ristretto.Config{
 		NumCounters: int64(10 * maxItemsEstimate),
-		MaxCost:     int64(maxSizeBytes),
+		MaxCost:     int64(cfg.MaxSizeBytes),
 		BufferItems: 64,
 	})
 	if err != nil {
 		return nil, err
 	}
-
-	// TODO investigate whether this is the right consistent library - it doesn't implement virtual nodes.
-	// Do a test with several members and test distribution.
 	return &Cache{
 		objStore:        objStore,
 		connFactory:     connFactory,
@@ -60,20 +54,33 @@ func NewCache(objStore objstore.Client, connFactory transport.ConnectionFactory,
 		connCaches:      make(map[string]*connectionCache),
 		members:         make(map[string]struct{}),
 		cache:           cache,
-		consist:         consistent.New(),
-		dataBucketName:  dataBucketName,
-		azInfo:          azInfo,
+		consist:         NewConsistentHash(cfg.VirtualFactor),
+		cfg: cfg,
 	}, nil
 }
 
-const maxConnectionsPerAddress = 5
-const objStoreCallTimeout = 5 * time.Second
-
-type hasher struct{}
-
-func (h hasher) Sum64(data []byte) uint64 {
-	return xxhash.Sum64(data)
+type Conf struct {
+	MaxSizeBytes int
+	DataBucketName string
+	AzInfo string
+	VirtualFactor int
+	MaxConnectionsPerAddress int
+	ObjStoreCallTimeout time.Duration
 }
+
+func NewConf() Conf {
+	return Conf{
+		MaxConnectionsPerAddress: DefaultMaxConnectionsPerAddress,
+		ObjStoreCallTimeout:      DefaultObjStoreCallTimeout,
+		VirtualFactor: DefaultVirtualFactor,
+	}
+}
+
+const (
+	DefaultMaxConnectionsPerAddress = 5
+	DefaultObjStoreCallTimeout = 5 * time.Second
+	DefaultVirtualFactor = 100
+)
 
 func (c *Cache) Start() {
 	c.lock.Lock()
@@ -100,7 +107,7 @@ func (c *Cache) MembershipChanged(membership cluster.MembershipState) {
 			// member added
 			var membershipData common.MembershipData
 			membershipData.Deserialize(member.Data, 0)
-			if membershipData.AZInfo == c.azInfo {
+			if membershipData.AZInfo == c.cfg.AzInfo {
 				// Each AZ has it's own cache so we don't have cross AZ calls when looking up in cache
 				c.consist.Add(membershipData.ListenAddress)
 				//c.consist.Add(&strMember{address: membershipData.ListenAddress})
@@ -128,26 +135,21 @@ func (m *strMember) String() string {
 func (c *Cache) GetTableBytes(key []byte) ([]byte, error) {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
-
-	target, err := c.getTargetForKey(key)
-	if err != nil {
-		return nil, err
+	target, ok := c.getTargetForKey(key)
+	if !ok {
+		return nil, common.NewTektiteErrorf(common.Unavailable, "no cache members")
 	}
-
 	if target == c.transportServer.Address() {
 		// Target is this node - we can do a direct call
 		return c.getFromCache(key)
 	}
-
 	conn, err := c.getConnection(target)
 	if err != nil {
 		return nil, err
 	}
-
 	req := createRequestBuffer()
 	req = binary.BigEndian.AppendUint32(req, uint32(len(key)))
 	req = append(req, key...)
-
 	resp, err := conn.SendRPC(transport.HandlerIDFetchCacheGetTableBytes, req)
 	if err != nil {
 		return nil, err
@@ -158,8 +160,8 @@ func (c *Cache) GetTableBytes(key []byte) ([]byte, error) {
 	return bytes, nil
 }
 
-func (c *Cache) getTargetForKey(key []byte) (string, error) {
-	return c.consist.Get(string(key))
+func (c *Cache) getTargetForKey(key []byte) (string, bool) {
+	return c.consist.Get(key)
 }
 
 func (c *Cache) handleGetTableBytes(_ *transport.ConnectionContext, request []byte, responseBuff []byte,
@@ -187,7 +189,7 @@ func (c *Cache) getFromCache(key []byte) ([]byte, error) {
 		return v.([]byte), nil
 	}
 	// TODO unavailability retries
-	bytes, err := objstore.GetWithTimeout(c.objStore, c.dataBucketName, string(key), objStoreCallTimeout)
+	bytes, err := objstore.GetWithTimeout(c.objStore, c.cfg.DataBucketName, string(key), c.cfg.ObjStoreCallTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -244,7 +246,7 @@ func (c *Cache) createConnCache(address string) *connectionCache {
 	if ok {
 		return connCache
 	}
-	connCache = newConnectionCache(address, maxConnectionsPerAddress, c.connFactory)
+	connCache = newConnectionCache(address, c.cfg.MaxConnectionsPerAddress, c.connFactory)
 	c.connCaches[address] = connCache
 	return connCache
 }
