@@ -162,7 +162,7 @@ func (c *Cache) getTargetForKey(key []byte) (string, error) {
 	return c.consist.Get(string(key))
 }
 
-func (c *Cache) handleGetTableBytes(_ int, request []byte, responseBuff []byte,
+func (c *Cache) handleGetTableBytes(_ *transport.ConnectionContext, request []byte, responseBuff []byte,
 	responseWriter transport.ResponseWriter) error {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
@@ -324,6 +324,10 @@ type clientWrapper struct {
 	cc    *connectionCache
 	index int
 	conn  transport.Connection
+}
+
+func (c *clientWrapper) SendOneway(handlerID int, message []byte) error {
+	return c.conn.SendOneway(handlerID, message)
 }
 
 func (c *clientWrapper) SendRPC(handlerID int, request []byte) ([]byte, error) {

@@ -104,7 +104,7 @@ func NewAgentWithFactories(cfg Conf, objStore objstore.Client, connectionFactory
 		objStore:   objStore,
 	}
 	bf, err := fetcher.NewBatchFetcher(objStore, topicMetaCache, partitionHashes, fetcherClFactory, getter.get,
-		transportServer.Address(), cfg.FetcherConf)
+		membershipID, cfg.FetcherConf)
 	if err != nil {
 		return nil, err
 	}

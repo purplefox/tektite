@@ -225,7 +225,7 @@ func (p *PartitionFetchState) read() (wouldExceedRequestMax bool, wouldExceedPar
 			cl, err := p.fs.bf.getClient()
 			var alreadyInitialised bool
 			lastReadableOffset, alreadyInitialised, err = p.partitionTables.initialise(func() (int64, error) {
-				return cl.RegisterTableListener(p.topicID, p.partitionID, p.fs.bf.address, atomic.LoadInt64(&p.fs.bf.resetSequence))
+				return cl.RegisterTableListener(p.topicID, p.partitionID, p.fs.bf.memberID, atomic.LoadInt64(&p.fs.bf.resetSequence))
 			})
 			if err != nil {
 				return false, false, err
