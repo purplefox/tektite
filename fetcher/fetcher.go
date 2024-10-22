@@ -41,11 +41,11 @@ type BatchFetcher struct {
 	objStore        objstore.Client
 	topicProvider   topicInfoProvider
 	partitionHashes *parthash.PartitionHashes
-	controlFactory  controllerClientFactory
+	controlFactory  control.ClientFactory
 	tableGetter     sst.TableGetter
 	memberID         string
 	recentTables    PartitionRecentTables
-	controlClients  *clientCache
+	controlClients  *control.ClientCache
 	dataBucketName  string
 	readExecs       []readExecutor
 	localCache      *LocalSSTCache
@@ -54,7 +54,7 @@ type BatchFetcher struct {
 }
 
 func NewBatchFetcher(objStore objstore.Client, topicProvider topicInfoProvider, partitionHashes *parthash.PartitionHashes,
-	controlFactory controllerClientFactory, tableGetter sst.TableGetter, memberID string, cfg Conf) (*BatchFetcher, error) {
+	controlFactory control.ClientFactory, tableGetter sst.TableGetter, memberID string, cfg Conf) (*BatchFetcher, error) {
 	localCache, err := NewLocalSSTCache(cfg.LocalCacheNumEntries, cfg.LocalCacheMaxBytes)
 	if err != nil {
 		return nil, err
@@ -65,8 +65,8 @@ func NewBatchFetcher(objStore objstore.Client, topicProvider topicInfoProvider, 
 		partitionHashes: partitionHashes,
 		controlFactory:  controlFactory,
 		tableGetter:     tableGetter,
-		memberID:         memberID,
-		controlClients:  newClientCache(cfg.MaxControllerConnections, controlFactory),
+		memberID:        memberID,
+		controlClients:  control.NewClientCache(cfg.MaxControllerConnections, controlFactory),
 		readExecs:       make([]readExecutor, cfg.NumReadExecutors),
 		localCache:      localCache,
 		dataBucketName:  cfg.DataBucketName,
@@ -133,7 +133,7 @@ func (b *BatchFetcher) Stop() error {
 	for i := 0; i < len(b.readExecs); i++ {
 		b.readExecs[i].stop()
 	}
-	b.controlClients.close()
+	b.controlClients.Close()
 	return nil
 }
 
@@ -178,7 +178,7 @@ func (b *BatchFetcher) getTableFromCache(tableID sst.SSTableID) (*sst.SSTable, e
 }
 
 func (b *BatchFetcher) getClient() (ControlClient, error) {
-	return b.controlClients.getClient()
+	return b.controlClients.GetClient()
 }
 
 func (b *BatchFetcher) MembershipChanged(membership cluster.MembershipState) error {

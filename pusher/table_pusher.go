@@ -32,13 +32,6 @@ caches them in memory
 * Writing the SSTable to object storage
 * Registering the SSTable metadata with the LSM. This involves inserting the SSTable metadata in level 0 of the LSM.
 * Writing produce responses to all produce requests which were included in the written SSTable
-
-# TODO
-
-* Writing offsets for each partition into the SSTable
-* Idempotent producers
-* Producer timeout
-* Improve locking?
 */
 type TablePusher struct {
 	lock             sync.Mutex

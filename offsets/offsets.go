@@ -51,9 +51,9 @@ type Cache struct {
 	lock                     sync.RWMutex
 	started                  bool
 	topicOffsets             map[int][]partitionOffsets
-	topicMetaProvider        topicMetaProvider
-	lsm                      lsmHolder
-	partitionHashes          *parthash.PartitionHashes
+	topicMetaProvider topicMetaProvider
+	querier           querier
+	partitionHashes   *parthash.PartitionHashes
 	objStore                 objstore.Client
 	dataBucketName           string
 	stopping                 atomic.Bool
@@ -68,7 +68,8 @@ type Cache struct {
 type topicMetaProvider interface {
 	GetTopicInfoByID(topicID int) (topicmeta.TopicInfo, error)
 }
-type lsmHolder interface {
+
+type querier interface {
 	GetTablesForHighestKeyWithPrefix(prefix []byte) ([]sst.SSTableID, error)
 }
 
@@ -77,7 +78,7 @@ const (
 	unavailabilityRetryDelay = 1 * time.Second
 )
 
-func NewOffsetsCache(topicProvider topicMetaProvider, lsm lsmHolder, objStore objstore.Client, dataBucketName string) (*Cache, error) {
+func NewOffsetsCache(topicProvider topicMetaProvider, lsm querier, objStore objstore.Client, dataBucketName string) (*Cache, error) {
 	// We don't cache as loader only loads once
 	partHashes, err := parthash.NewPartitionHashes(0)
 	if err != nil {
@@ -86,7 +87,7 @@ func NewOffsetsCache(topicProvider topicMetaProvider, lsm lsmHolder, objStore ob
 	return &Cache{
 		topicMetaProvider: topicProvider,
 		topicOffsets:      make(map[int][]partitionOffsets),
-		lsm:               lsm,
+		querier:           lsm,
 		objStore:          objStore,
 		dataBucketName:    dataBucketName,
 		partitionHashes:   partHashes,
@@ -451,11 +452,12 @@ func (o *Cache) LoadHighestOffsetForPartition(topicID int, partitionID int) (int
 	if err != nil {
 		return 0, err
 	}
-	tables, err := o.lsm.GetTablesForHighestKeyWithPrefix(prefix)
+	tables, err := o.querier.GetTablesForHighestKeyWithPrefix(prefix)
 	if err != nil {
 		return 0, err
 	}
 	for _, tableID := range tables {
+		// TODO instead of going directly to the object store, should we fetch from fetch cache?
 		buff, err := o.getWithRetry(tableID)
 		if err != nil {
 			return 0, err
