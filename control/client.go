@@ -11,7 +11,8 @@ import (
 )
 
 type Client interface {
-	GetOffsets(infos []offsets.GetOffsetTopicInfo) ([]offsets.OffsetTopicInfo, int64, error)
+	GetOffsets(infos []offsets.GetOffsetTopicInfo, epochInfos []GroupEpochInfo) ([]offsets.OffsetTopicInfo, int64,
+		[]bool, error)
 
 	ApplyLsmChanges(regBatch lsm.RegistrationBatch) error
 
@@ -29,12 +30,10 @@ type Client interface {
 
 	DeleteTopic(topicName string) error
 
-	GetGroupCoordinatorInfo(groupID string) (address string, groupEpoch int32, err error)
+	GetGroupCoordinatorInfo(groupID string) (address string, groupEpoch int, err error)
 
 	Close() error
 }
-
-
 
 // on error, the caller must close the connection
 type client struct {
@@ -119,23 +118,25 @@ func (c *client) RegisterTableListener(topicID int, partitionID int, memberID st
 	return resp.LastReadableOffset, nil
 }
 
-func (c *client) GetOffsets(infos []offsets.GetOffsetTopicInfo) ([]offsets.OffsetTopicInfo, int64, error) {
+func (c *client) GetOffsets(infos []offsets.GetOffsetTopicInfo, epochInfos []GroupEpochInfo) ([]offsets.OffsetTopicInfo,
+	int64, []bool, error) {
 	conn, err := c.getConnection()
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, nil, err
 	}
 	req := GetOffsetsRequest{
-		LeaderVersion: c.leaderVersion,
-		Infos:         infos,
+		LeaderVersion:   c.leaderVersion,
+		Infos:           infos,
+		GroupEpochInfos: epochInfos,
 	}
 	request := req.Serialize(createRequestBuffer())
 	respBuff, err := conn.SendRPC(transport.HandlerIDControllerGetOffsets, request)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, nil, err
 	}
 	var resp GetOffsetsResponse
 	resp.Deserialize(respBuff, 0)
-	return resp.Offsets, resp.Sequence, nil
+	return resp.Offsets, resp.Sequence, resp.EpochsOK, nil
 }
 
 func (c *client) PollForJob() (lsm.CompactionJob, error) {
@@ -199,9 +200,23 @@ func (c *client) DeleteTopic(topicName string) error {
 	return err
 }
 
-func (c *client) GetGroupCoordinatorInfo(groupID string) (string, int32, error) {
-	// TODO
-	return "", 0, nil
+func (c *client) GetGroupCoordinatorInfo(groupID string) (string, int, error) {
+	conn, err := c.getConnection()
+	if err != nil {
+		return "", 0, err
+	}
+	req := GetGroupCoordinatorInfoRequest{
+		LeaderVersion: c.leaderVersion,
+		GroupID:       groupID,
+	}
+	buff := req.Serialize(createRequestBuffer())
+	respBuff, err := conn.SendRPC(transport.HandlerIDControllerGetGroupCoordinatorInfo, buff)
+	if err != nil {
+		return "", 0, err
+	}
+	var resp GetGroupCoordinatorInfoResponse
+	resp.Deserialize(respBuff, 0)
+	return resp.Address, resp.GroupEpoch, nil
 }
 
 func (c *client) Close() error {

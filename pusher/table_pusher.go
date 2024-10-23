@@ -7,6 +7,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/spirit-labs/tektite/asl/encoding"
 	"github.com/spirit-labs/tektite/common"
+	"github.com/spirit-labs/tektite/control"
 	"github.com/spirit-labs/tektite/kafkaencoding"
 	"github.com/spirit-labs/tektite/kafkaprotocol"
 	"github.com/spirit-labs/tektite/logger"
@@ -60,7 +61,8 @@ type topicInfoProvider interface {
 type controllerClientFactory func() (ControlClient, error)
 
 type ControlClient interface {
-	GetOffsets(infos []offsets.GetOffsetTopicInfo) ([]offsets.OffsetTopicInfo, int64, error)
+	GetOffsets(infos []offsets.GetOffsetTopicInfo, epochInfos []control.GroupEpochInfo) ([]offsets.OffsetTopicInfo, int64,
+		[]bool, error)
 	RegisterL0Table(sequence int64, regEntry lsm.RegistrationEntry) error
 	Close() error
 }

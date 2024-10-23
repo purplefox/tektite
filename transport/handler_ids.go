@@ -10,6 +10,7 @@ const (
 	HandlerIDControllerGetTopicInfo
 	HandlerIDControllerCreateTopic
 	HandlerIDControllerDeleteTopic
+	HandlerIDControllerGetGroupCoordinatorInfo
 	HandlerIDMetaLocalCacheTopicAdded
 	HandlerIDMetaLocalCacheTopicDeleted
 	HandlerIDFetchCacheGetTableBytes

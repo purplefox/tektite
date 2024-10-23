@@ -159,7 +159,7 @@ func (c *clientWrapper) DeleteTopic(topicName string) error {
 	return err
 }
 
-func (c *clientWrapper) GetGroupCoordinatorInfo(groupID string) (string, int32, error) {
+func (c *clientWrapper) GetGroupCoordinatorInfo(groupID string) (string, int, error) {
 	address, groupEpoch, err := c.client.GetGroupCoordinatorInfo(groupID)
 	if err != nil {
 		c.closeConnection()

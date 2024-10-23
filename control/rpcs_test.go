@@ -147,7 +147,6 @@ func TestSerializeDeserializeGetOffsetsRequest(t *testing.T) {
 	req := GetOffsetsRequest{
 		LeaderVersion: 4536,
 		Infos: []offsets.GetOffsetTopicInfo{
-
 			{
 				TopicID: 1234,
 				PartitionInfos: []offsets.GetOffsetPartitionInfo{
@@ -168,6 +167,20 @@ func TestSerializeDeserializeGetOffsetsRequest(t *testing.T) {
 					{PartitionID: 879, NumOffsets: 12321},
 					{PartitionID: 34, NumOffsets: 4536},
 				},
+			},
+		},
+		GroupEpochInfos: []GroupEpochInfo{
+			{
+				GroupID:    "consumer-group-1",
+				GroupEpoch: 123213,
+			},
+			{
+				GroupID:    "consumer-group-2",
+				GroupEpoch: 23423,
+			},
+			{
+				GroupID:    "consumer-group-3",
+				GroupEpoch: 34545,
 			},
 		},
 	}
@@ -211,6 +224,9 @@ func TestSerializeDeserializeGetOffsetsResponse(t *testing.T) {
 			},
 		},
 		Sequence: 2137632,
+		EpochsOK: []bool{
+			true, false, false, true, false, true, true,
+		},
 	}
 	var buff []byte
 	buff = append(buff, 1, 2, 3)
@@ -282,6 +298,34 @@ func TestSerializeDeserializeDeleteTopicRequest(t *testing.T) {
 	buff = append(buff, 1, 2, 3)
 	buff = req.Serialize(buff)
 	var req2 DeleteTopicRequest
+	off := req2.Deserialize(buff, 3)
+	require.Equal(t, req, req2)
+	require.Equal(t, off, len(buff))
+}
+
+func TestSerializeDeserializeGetGroupCoordinatorInfoRequest(t *testing.T) {
+	req := GetGroupCoordinatorInfoRequest{
+		LeaderVersion: 123,
+		GroupID:       "some-group-id",
+	}
+	var buff []byte
+	buff = append(buff, 1, 2, 3)
+	buff = req.Serialize(buff)
+	var req2 GetGroupCoordinatorInfoRequest
+	off := req2.Deserialize(buff, 3)
+	require.Equal(t, req, req2)
+	require.Equal(t, off, len(buff))
+}
+
+func TestSerializeDeserializeGetGroupCoordinatorInfoResponse(t *testing.T) {
+	req := GetGroupCoordinatorInfoResponse{
+		Address:    "some-address-812721",
+		GroupEpoch: 82378248,
+	}
+	var buff []byte
+	buff = append(buff, 1, 2, 3)
+	buff = req.Serialize(buff)
+	var req2 GetGroupCoordinatorInfoResponse
 	off := req2.Deserialize(buff, 3)
 	require.Equal(t, req, req2)
 	require.Equal(t, off, len(buff))

@@ -20,29 +20,31 @@ by being the first member of the cluster state. At any one time there is only on
 Controller handles updates and queries to the LSM, offsets, and topic metadata.
 */
 type Controller struct {
-	cfg               Conf
-	lock              sync.RWMutex
-	started           bool
-	objStoreClient    objstore.Client
-	connectionFactory transport.ConnectionFactory
-	transportServer   transport.Server
-	lsmHolder         *LsmHolder
-	offsetsCache      *offsets.Cache
-	topicMetaManager  *topicmeta.Manager
-	currentMembership cluster.MembershipState
-	tableListeners    *tableListeners
-	membershipID      string
+	cfg                        Conf
+	lock                       sync.RWMutex
+	started                    bool
+	objStoreClient             objstore.Client
+	connectionFactory          transport.ConnectionFactory
+	transportServer            transport.Server
+	lsmHolder                  *LsmHolder
+	offsetsCache               *offsets.Cache
+	topicMetaManager           *topicmeta.Manager
+	currentMembership          cluster.MembershipState
+	tableListeners             *tableListeners
+	groupCoordinatorController *GroupCoordinatorController
+	membershipID               string
 }
 
 func NewController(cfg Conf, objStoreClient objstore.Client, connectionFactory transport.ConnectionFactory,
 	transportServer transport.Server, membershipID string) *Controller {
 	control := &Controller{
-		cfg:               cfg,
-		objStoreClient:    objStoreClient,
-		connectionFactory: connectionFactory,
-		transportServer:   transportServer,
-		tableListeners:    newTableListeners(cfg.TableNotificationInterval, connectionFactory),
-		membershipID:      membershipID,
+		cfg:                        cfg,
+		objStoreClient:             objStoreClient,
+		connectionFactory:          connectionFactory,
+		transportServer:            transportServer,
+		tableListeners:             newTableListeners(cfg.TableNotificationInterval, connectionFactory),
+		groupCoordinatorController: NewGroupCoordinatorController(),
+		membershipID:               membershipID,
 	}
 	return control
 }
@@ -63,6 +65,7 @@ func (c *Controller) Start() error {
 	c.transportServer.RegisterHandler(transport.HandlerIDControllerGetTopicInfo, c.handleGetTopicInfo)
 	c.transportServer.RegisterHandler(transport.HandlerIDControllerCreateTopic, c.handleCreateTopic)
 	c.transportServer.RegisterHandler(transport.HandlerIDControllerDeleteTopic, c.handleDeleteTopic)
+	c.transportServer.RegisterHandler(transport.HandlerIDControllerGetGroupCoordinatorInfo, c.handleGetGroupCoordinatorInfo)
 	c.tableListeners.start()
 	c.started = true
 	return nil
@@ -149,6 +152,7 @@ func (c *Controller) MembershipChanged(newState cluster.MembershipState) error {
 		c.topicMetaManager.MembershipChanged(newState)
 	}
 	c.tableListeners.membershipChanged(&newState)
+	c.groupCoordinatorController.MembershipChanged(&newState)
 	return nil
 }
 
@@ -164,24 +168,18 @@ func (c *Controller) Client() (Client, error) {
 	var leaderMembershipData common.MembershipData
 	leaderMembershipData.Deserialize(c.currentMembership.Members[0].Data, 0)
 	return &client{
-		m:              c,
-		address:        leaderMembershipData.ListenAddress,
+		m:             c,
+		address:       leaderMembershipData.ListenAddress,
 		leaderVersion: c.currentMembership.LeaderVersion,
-		connFactory:    c.connectionFactory,
+		connFactory:   c.connectionFactory,
 	}, nil
 }
 
 func (c *Controller) handleRegisterL0Table(_ *transport.ConnectionContext, request []byte, responseBuff []byte, responseWriter transport.ResponseWriter) error {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
-	if err := c.checkStarted(); err != nil {
+	if err := c.requestChecks(request, responseWriter); err != nil {
 		return err
-	}
-	if err := c.checkLeader(); err != nil {
-		return err
-	}
-	if err := checkRPCVersion(request); err != nil {
-		return responseWriter(nil, err)
 	}
 	var req RegisterL0Request
 	req.Deserialize(request, 2)
@@ -213,14 +211,8 @@ func (c *Controller) handleRegisterL0Table(_ *transport.ConnectionContext, reque
 func (c *Controller) handleApplyChanges(_ *transport.ConnectionContext, request []byte, responseBuff []byte, responseWriter transport.ResponseWriter) error {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
-	if err := c.checkStarted(); err != nil {
+	if err := c.requestChecks(request, responseWriter); err != nil {
 		return err
-	}
-	if err := c.checkLeader(); err != nil {
-		return err
-	}
-	if err := checkRPCVersion(request); err != nil {
-		return responseWriter(nil, err)
 	}
 	var req ApplyChangesRequest
 	req.Deserialize(request, 2)
@@ -240,14 +232,8 @@ func (c *Controller) handleApplyChanges(_ *transport.ConnectionContext, request 
 func (c *Controller) handleRegisterTableListener(_ *transport.ConnectionContext, request []byte, responseBuff []byte, responseWriter transport.ResponseWriter) error {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
-	if err := c.checkStarted(); err != nil {
+	if err := c.requestChecks(request, responseWriter); err != nil {
 		return err
-	}
-	if err := c.checkLeader(); err != nil {
-		return err
-	}
-	if err := checkRPCVersion(request); err != nil {
-		return responseWriter(nil, err)
 	}
 	var req RegisterTableListenerRequest
 	req.Deserialize(request, 2)
@@ -280,14 +266,8 @@ func (c *Controller) handleRegisterTableListener(_ *transport.ConnectionContext,
 func (c *Controller) handleQueryTablesInRange(_ *transport.ConnectionContext, request []byte, responseBuff []byte, responseWriter transport.ResponseWriter) error {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
-	if err := c.checkStarted(); err != nil {
+	if err := c.requestChecks(request, responseWriter); err != nil {
 		return err
-	}
-	if err := c.checkLeader(); err != nil {
-		return err
-	}
-	if err := checkRPCVersion(request); err != nil {
-		return responseWriter(nil, err)
 	}
 	var req QueryTablesInRangeRequest
 	req.Deserialize(request, 2)
@@ -305,20 +285,19 @@ func (c *Controller) handleQueryTablesInRange(_ *transport.ConnectionContext, re
 func (c *Controller) handleGetOffsets(_ *transport.ConnectionContext, request []byte, responseBuff []byte, responseWriter transport.ResponseWriter) error {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
-	if err := c.checkStarted(); err != nil {
+	if err := c.requestChecks(request, responseWriter); err != nil {
 		return err
-	}
-	if err := c.checkLeader(); err != nil {
-		return err
-	}
-	if err := checkRPCVersion(request); err != nil {
-		return responseWriter(nil, err)
 	}
 	var req GetOffsetsRequest
 	req.Deserialize(request, 2)
 	if err := c.checkLeaderVersion(req.LeaderVersion); err != nil {
 		return responseWriter(nil, err)
 	}
+
+	// First we check whether the group epochs are valid
+	epochsOK := c.groupCoordinatorController.CheckGroupEpochs(req.GroupEpochInfos)
+
+	// And then we get the offsets
 	offs, seq, err := c.offsetsCache.GetOffsets(req.Infos)
 	if err != nil {
 		return responseWriter(nil, err)
@@ -326,6 +305,7 @@ func (c *Controller) handleGetOffsets(_ *transport.ConnectionContext, request []
 	resp := GetOffsetsResponse{
 		Offsets:  offs,
 		Sequence: seq,
+		EpochsOK: epochsOK,
 	}
 	responseBuff = resp.Serialize(responseBuff)
 	return responseWriter(responseBuff, nil)
@@ -334,14 +314,8 @@ func (c *Controller) handleGetOffsets(_ *transport.ConnectionContext, request []
 func (c *Controller) handlePollForJob(ctx *transport.ConnectionContext, request []byte, responseBuff []byte, responseWriter transport.ResponseWriter) error {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
-	if err := c.checkStarted(); err != nil {
+	if err := c.requestChecks(request, responseWriter); err != nil {
 		return err
-	}
-	if err := c.checkLeader(); err != nil {
-		return err
-	}
-	if err := checkRPCVersion(request); err != nil {
-		return responseWriter(nil, err)
 	}
 	c.lsmHolder.lsmManager.PollForJob(ctx.ConnectionID, func(job *lsm.CompactionJob, err error) {
 		if err != nil {
@@ -362,14 +336,8 @@ func (c *Controller) handlePollForJob(ctx *transport.ConnectionContext, request 
 func (c *Controller) handleGetTopicInfo(_ *transport.ConnectionContext, request []byte, responseBuff []byte, responseWriter transport.ResponseWriter) error {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
-	if err := c.checkStarted(); err != nil {
+	if err := c.requestChecks(request, responseWriter); err != nil {
 		return err
-	}
-	if err := c.checkLeader(); err != nil {
-		return err
-	}
-	if err := checkRPCVersion(request); err != nil {
-		return responseWriter(nil, err)
 	}
 	var req GetTopicInfoRequest
 	req.Deserialize(request, 2)
@@ -390,14 +358,8 @@ func (c *Controller) handleGetTopicInfo(_ *transport.ConnectionContext, request 
 func (c *Controller) handleCreateTopic(_ *transport.ConnectionContext, request []byte, responseBuff []byte, responseWriter transport.ResponseWriter) error {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
-	if err := c.checkStarted(); err != nil {
+	if err := c.requestChecks(request, responseWriter); err != nil {
 		return err
-	}
-	if err := c.checkLeader(); err != nil {
-		return err
-	}
-	if err := checkRPCVersion(request); err != nil {
-		return responseWriter(nil, err)
 	}
 	var req CreateTopicRequest
 	req.Deserialize(request, 2)
@@ -414,14 +376,8 @@ func (c *Controller) handleCreateTopic(_ *transport.ConnectionContext, request [
 func (c *Controller) handleDeleteTopic(_ *transport.ConnectionContext, request []byte, responseBuff []byte, responseWriter transport.ResponseWriter) error {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
-	if err := c.checkStarted(); err != nil {
+	if err := c.requestChecks(request, responseWriter); err != nil {
 		return err
-	}
-	if err := c.checkLeader(); err != nil {
-		return err
-	}
-	if err := checkRPCVersion(request); err != nil {
-		return responseWriter(nil, err)
 	}
 	var req DeleteTopicRequest
 	req.Deserialize(request, 2)
@@ -433,6 +389,45 @@ func (c *Controller) handleDeleteTopic(_ *transport.ConnectionContext, request [
 		return responseWriter(nil, err)
 	}
 	return responseWriter(responseBuff, nil)
+}
+
+func (c *Controller) handleGetGroupCoordinatorInfo(_ *transport.ConnectionContext, request []byte, responseBuff []byte,
+	responseWriter transport.ResponseWriter) error {
+	c.lock.RLock()
+	defer c.lock.RUnlock()
+	if err := c.requestChecks(request, responseWriter); err != nil {
+		return err
+	}
+	var req GetGroupCoordinatorInfoRequest
+	req.Deserialize(request, 2)
+	if err := c.checkLeaderVersion(req.LeaderVersion); err != nil {
+		return responseWriter(nil, err)
+	}
+	address, groupEpoch, err := c.groupCoordinatorController.GetGroupCoordinatorInfo(req.GroupID)
+	if err != nil {
+		return responseWriter(nil, err)
+	}
+	resp := GetGroupCoordinatorInfoResponse{
+		Address:    address,
+		GroupEpoch: groupEpoch,
+	}
+	responseBuff = resp.Serialize(responseBuff)
+	return responseWriter(responseBuff, nil)
+}
+
+func (c *Controller) requestChecks(request []byte, responseWriter transport.ResponseWriter) error {
+	var err error
+	err = c.checkStarted()
+	if err == nil {
+		err = c.checkLeader()
+		if err == nil {
+			err = checkRPCVersion(request)
+			if err == nil {
+				return nil
+			}
+		}
+	}
+	return responseWriter(nil, err)
 }
 
 func checkRPCVersion(request []byte) error {
