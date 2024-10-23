@@ -1,7 +1,6 @@
 package group
 
 import (
-	"github.com/spirit-labs/tektite/asl/conf"
 	"github.com/spirit-labs/tektite/common"
 	"github.com/spirit-labs/tektite/control"
 	"github.com/spirit-labs/tektite/kafkaprotocol"
@@ -13,7 +12,7 @@ import (
 )
 
 type Coordinator struct {
-	cfg           *conf.Config
+	cfg           Conf
 	topicProvider topicInfoProvider
 	clientCache   *control.ClientCache
 	pusherClient  tablePusherClient
@@ -31,19 +30,38 @@ type tablePusherClient interface {
 	WriteKVs(kvs []common.KV) error
 }
 
-// FIXME create config struct
-const maxControllerClients = 10
+type Conf struct {
+	MinSessionTimeout    time.Duration
+	MaxSessionTimeout    time.Duration
+	InitialJoinDelay     time.Duration
+	NewMemberJoinTimeout time.Duration
+}
 
-func NewCoordinator(cfg *conf.Config, topicProvider topicInfoProvider,
-	controlClientFactory control.ClientFactory, pusherClient tablePusherClient, tableGetter sst.TableGetter) (*Coordinator, error) {
+func NewConf() Conf {
+	return Conf{
+		MinSessionTimeout:    DefaultMinSessionTimeout,
+		MaxSessionTimeout:    DefaultMaxSessionTimeout,
+		InitialJoinDelay:     DefaultInitialJoinDelay,
+		NewMemberJoinTimeout: DefaultNewMemberJoinTimeout,
+	}
+}
+
+const (
+	DefaultMinSessionTimeout    = 6 * time.Second
+	DefaultMaxSessionTimeout    = 30 * time.Minute
+	DefaultInitialJoinDelay     = 3 * time.Second
+	DefaultNewMemberJoinTimeout = 5 * time.Minute
+)
+
+func NewCoordinator(cfg Conf, topicProvider topicInfoProvider, controlClientCache *control.ClientCache,
+	pusherClient tablePusherClient, tableGetter sst.TableGetter) (*Coordinator, error) {
 	return &Coordinator{
 		cfg:           cfg,
 		groups:        map[string]*group{},
 		topicProvider: topicProvider,
-		// FIXME - pass in client cache from agent and share with fetcher?
-		clientCache:  control.NewClientCache(maxControllerClients, controlClientFactory),
-		pusherClient: pusherClient,
-		tableGetter:  tableGetter,
+		clientCache:   controlClientCache,
+		pusherClient:  pusherClient,
+		tableGetter:   tableGetter,
 	}, nil
 }
 
@@ -60,21 +78,22 @@ func (gc *Coordinator) Stop() error {
 	return nil
 }
 
-func (gc *Coordinator) FindCoordinator(groupID string) int {
-	// TODO - contact the controller to get the agent address for the group - the controller will maintain a mapping
-	// and mapping of group to agent will be preserved as long as agent is alive - we can't have mapping changing
-	// if we add / remove other agents to the cluster as that would cause consumers to have to rebalance.
-	return -1
+func (gc *Coordinator) FindCoordinator(groupID string) (string, error) {
+	cl, err := gc.clientCache.GetClient()
+	if err != nil {
+		return "", err
+	}
+	return cl.GetGroupCoordinatorAddress(groupID)
 }
 
 func (gc *Coordinator) JoinGroup(apiVersion int16, groupID string, clientID string, memberID string, protocolType string,
-	protocols []ProtocolInfo, sessionTimeout time.Duration, rebalanceTimeout time.Duration, complFunc JoinCompletion) {
+	protocols []ProtocolInfo, sessionTimeout time.Duration, reBalanceTimeout time.Duration, completionFunc JoinCompletion) {
 	if !gc.checkLeader(groupID) {
-		gc.sendJoinError(complFunc, kafkaprotocol.ErrorCodeNotCoordinator)
+		gc.sendJoinError(completionFunc, kafkaprotocol.ErrorCodeNotCoordinator)
 		return
 	}
-	if sessionTimeout < gc.cfg.KafkaMinSessionTimeout || sessionTimeout > gc.cfg.KafkaMaxSessionTimeout {
-		gc.sendJoinError(complFunc, kafkaprotocol.ErrorCodeInvalidSessionTimeout)
+	if sessionTimeout < gc.cfg.MinSessionTimeout || sessionTimeout > gc.cfg.MaxSessionTimeout {
+		gc.sendJoinError(completionFunc, kafkaprotocol.ErrorCodeInvalidSessionTimeout)
 		return
 	}
 	g, ok := gc.getGroup(groupID)
@@ -85,25 +104,25 @@ func (gc *Coordinator) JoinGroup(apiVersion int16, groupID string, clientID stri
 			// FIXME??????????????? handle error
 		}
 	}
-	g.Join(apiVersion, clientID, memberID, protocolType, protocols, sessionTimeout, rebalanceTimeout, complFunc)
+	g.Join(apiVersion, clientID, memberID, protocolType, protocols, sessionTimeout, reBalanceTimeout, completionFunc)
 }
 
 func (gc *Coordinator) SyncGroup(groupID string, memberID string, generationID int, assignments []AssignmentInfo,
-	complFunc SyncCompletion) {
+	completionFunc SyncCompletion) {
 	if !gc.checkLeader(groupID) {
-		gc.sendSyncError(complFunc, kafkaprotocol.ErrorCodeNotCoordinator)
+		gc.sendSyncError(completionFunc, kafkaprotocol.ErrorCodeNotCoordinator)
 		return
 	}
 	if memberID == "" {
-		gc.sendSyncError(complFunc, kafkaprotocol.ErrorCodeUnknownMemberID)
+		gc.sendSyncError(completionFunc, kafkaprotocol.ErrorCodeUnknownMemberID)
 		return
 	}
 	g, ok := gc.getGroup(groupID)
 	if !ok {
-		gc.sendSyncError(complFunc, kafkaprotocol.ErrorCodeGroupIDNotFound)
+		gc.sendSyncError(completionFunc, kafkaprotocol.ErrorCodeGroupIDNotFound)
 		return
 	}
-	g.Sync(memberID, generationID, assignments, complFunc)
+	g.Sync(memberID, generationID, assignments, completionFunc)
 }
 
 func (gc *Coordinator) HeartbeatGroup(groupID string, memberID string, generationID int) int {
@@ -179,16 +198,15 @@ func (gc *Coordinator) getGroup(groupID string) (*group, bool) {
 }
 
 func (gc *Coordinator) checkLeader(groupID string) bool {
-	leaderNode := gc.FindCoordinator(groupID)
-	return leaderNode == gc.cfg.NodeID
+	return false
 }
 
-func (gc *Coordinator) sendJoinError(complFunc JoinCompletion, errorCode int) {
-	complFunc(JoinResult{ErrorCode: errorCode})
+func (gc *Coordinator) sendJoinError(completionFunc JoinCompletion, errorCode int) {
+	completionFunc(JoinResult{ErrorCode: errorCode})
 }
 
-func (gc *Coordinator) sendSyncError(complFunc SyncCompletion, errorCode int) {
-	complFunc(errorCode, nil)
+func (gc *Coordinator) sendSyncError(completionFunc SyncCompletion, errorCode int) {
+	completionFunc(errorCode, nil)
 }
 
 func (gc *Coordinator) getState(groupID string) int {
@@ -254,8 +272,8 @@ func (gc *Coordinator) rescheduleTimer(timerKey string, delay time.Duration, act
 
 const (
 	stateEmpty             = 0
-	statePreRebalance      = 1
-	stateAwaitingRebalance = 2
+	statePreReBalance      = 1
+	stateAwaitingReBalance = 2
 	stateActive            = 3
 	stateDead              = 4
 )

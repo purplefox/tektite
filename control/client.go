@@ -29,6 +29,8 @@ type Client interface {
 
 	DeleteTopic(topicName string) error
 
+	GetGroupCoordinatorAddress(groupID string) (string, error)
+
 	Close() error
 }
 
@@ -102,7 +104,7 @@ func (c *client) RegisterTableListener(topicID int, partitionID int, memberID st
 		LeaderVersion: c.leaderVersion,
 		TopicID:       topicID,
 		PartitionID:   partitionID,
-		MemberID:       memberID,
+		MemberID:      memberID,
 		ResetSequence: resetSequence,
 	}
 	request := req.Serialize(createRequestBuffer())
@@ -193,6 +195,11 @@ func (c *client) DeleteTopic(topicName string) error {
 	buff := req.Serialize(createRequestBuffer())
 	_, err = conn.SendRPC(transport.HandlerIDControllerDeleteTopic, buff)
 	return err
+}
+
+func (c *client) GetGroupCoordinatorAddress(groupID string) (string, error) {
+	// TODO
+	return "", nil
 }
 
 func (c *client) Close() error {

@@ -159,6 +159,14 @@ func (c *clientWrapper) DeleteTopic(topicName string) error {
 	return err
 }
 
+func (c *clientWrapper) GetGroupCoordinatorAddress(groupID string) (string, error) {
+	address, err := c.client.GetGroupCoordinatorAddress(groupID)
+	if err != nil {
+		c.closeConnection()
+	}
+	return address, err
+}
+
 func (c *clientWrapper) closeConnection() {
 	// always close connection on error
 	if err := c.Close(); err != nil {

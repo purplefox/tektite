@@ -3,12 +3,14 @@ package group
 import (
 	"fmt"
 	"github.com/google/uuid"
-	"github.com/spirit-labs/tektite/asl/conf"
+	"github.com/spirit-labs/tektite/common"
+	"github.com/spirit-labs/tektite/control"
 	"github.com/spirit-labs/tektite/kafkaprotocol"
-	"github.com/spirit-labs/tektite/opers"
-	"github.com/spirit-labs/tektite/types"
+	"github.com/spirit-labs/tektite/lsm"
+	"github.com/spirit-labs/tektite/offsets"
+	"github.com/spirit-labs/tektite/sst"
+	"github.com/spirit-labs/tektite/topicmeta"
 	"github.com/stretchr/testify/require"
-	"math/rand"
 	"strings"
 	"sync"
 	"testing"
@@ -24,38 +26,43 @@ const (
 	defaultProtocolName     = "protocol1"
 )
 
-func TestFindCoordinator(t *testing.T) {
-	gcs := createCoordinators(t, defaultInitialJoinDelay, 3)
-	defer stopCoordinators(t, gcs)
-	for i := 0; i < 100; i++ {
-		groupName := uuid.New().String()
-		nodeID := -1
-		// Should evaluate the same on all nodes
-		for j, gc := range gcs {
-			theNodeID := gc.FindCoordinator(groupName)
-			if j > 0 {
-				require.Equal(t, nodeID, theNodeID)
-			} else {
-				nodeID = theNodeID
-			}
-		}
-		require.True(t, nodeID >= 0 && nodeID <= 2)
-	}
-}
+/*
+TODO test offset commit, offset fetch, offset load etc
+*/
+
+//func TestFindCoordinator(t *testing.T) {
+//	gcs := createCoordinators(t, defaultInitialJoinDelay, 3)
+//	defer stopCoordinators(t, gcs)
+//	for i := 0; i < 100; i++ {
+//		groupName := uuid.New().String()
+//		nodeID := -1
+//		// Should evaluate the same on all nodes
+//		for j, gc := range gcs {
+//			theNodeID := gc.FindCoordinator(groupName)
+//			if j > 0 {
+//				require.Equal(t, nodeID, theNodeID)
+//			} else {
+//				nodeID = theNodeID
+//			}
+//		}
+//		require.True(t, nodeID >= 0 && nodeID <= 2)
+//	}
+//}
+
+/*
+Refactor these tests to only create one coordinator - no point in having many
+*/
 
 func TestInitialJoinNoMemberID(t *testing.T) {
-	gcs := createCoordinators(t, defaultInitialJoinDelay, 3)
-	defer stopCoordinators(t, gcs)
-
+	gc := createCoordinator(t)
+	defer stopCoordinator(t, gc)
 	protocolMetadata := []byte("protocol1_bytes")
 	protocols := []ProtocolInfo{
 		{defaultProtocolName, protocolMetadata},
 	}
-
 	start := time.Now()
 	groupID := uuid.New().String()
 	clientID := uuid.New().String()
-	gc := findNode(groupID, gcs)
 	// Only get this behaviour with API version >= 4
 	res := callJoinGroupSyncWithApiVersion(gc, groupID, clientID, "", defaultProtocolType,
 		protocols, defaultSessionTimeout, defaultRebalanceTimeout, 4)
@@ -969,7 +976,7 @@ func TestSyncInJoinPhaseFails(t *testing.T) {
 		defaultSessionTimeout, defaultRebalanceTimeout, func(result JoinResult) {
 		})
 
-	// The group will now be in state statePreRebalance
+	// The group will now be in state statePreReBalance
 
 	ch := make(chan int, 1)
 	gc.SyncGroup(groupID, "some-member-id", 0, nil, func(errorCode int, assignment []byte) {
@@ -1302,8 +1309,8 @@ func TestHeartbeatIllegalGeneration(t *testing.T) {
 		})
 	res := <-ch
 
-	// Group should now be in state stateAwaitingRebalance - waiting for initial timeout before completing join
-	require.Equal(t, stateAwaitingRebalance, gc.getState(groupID))
+	// Group should now be in state stateAwaitingReBalance - waiting for initial timeout before completing join
+	require.Equal(t, stateAwaitingReBalance, gc.getState(groupID))
 
 	errorCode := gc.HeartbeatGroup(groupID, res.MemberID, 100)
 	require.Equal(t, kafkaprotocol.ErrorCodeIllegalGeneration, errorCode)
@@ -1322,8 +1329,8 @@ func TestHeartbeatAwaitingRebalance(t *testing.T) {
 		return false
 	})
 
-	// Group should now be in state stateAwaitingRebalance
-	require.Equal(t, stateAwaitingRebalance, gc.getState(groupID))
+	// Group should now be in state stateAwaitingReBalance
+	require.Equal(t, stateAwaitingReBalance, gc.getState(groupID))
 
 	errorCode := gc.HeartbeatGroup(groupID, memberID, 1)
 	require.Equal(t, kafkaprotocol.ErrorCodeNone, errorCode)
@@ -1347,7 +1354,7 @@ func TestHeartbeatWhileActive(t *testing.T) {
 		return false
 	})
 
-	// Group should now be in state stateAwaitingRebalance
+	// Group should now be in state stateAwaitingReBalance
 	require.Equal(t, stateActive, gc.getState(groupID))
 
 	errorCode := gc.HeartbeatGroup(groupID, memberID, 1)
@@ -1522,10 +1529,10 @@ func TestJoinTimeoutMembersRemovedIncludingLeaderAndJoinCompletes(t *testing.T) 
 
 func TestJoinTimeoutNoMembersRejoinTransitionsToEmpty(t *testing.T) {
 	newMemberJoinTimeout := 500 * time.Millisecond
-	gcs := createCoordinatorsWithCfgSetter(t, 3, func(config *conf.Config) {
-		config.KafkaInitialJoinDelay = 100 * time.Millisecond
-		config.KafkaMinSessionTimeout = 1 * time.Millisecond
-		config.KafkaNewMemberJoinTimeout = newMemberJoinTimeout
+	gcs := createCoordinatorsWithCfgSetter(t, 3, func(config *Conf) {
+		config.InitialJoinDelay = 100 * time.Millisecond
+		config.MinSessionTimeout = 1 * time.Millisecond
+		config.NewMemberJoinTimeout = newMemberJoinTimeout
 	})
 	defer stopCoordinators(t, gcs)
 
@@ -1546,7 +1553,7 @@ func TestJoinTimeoutNoMembersRejoinTransitionsToEmpty(t *testing.T) {
 		rebalanceTimeout, func(result JoinResult) {
 			ch <- result
 		})
-	require.Equal(t, statePreRebalance, gc.getState(groupID))
+	require.Equal(t, statePreReBalance, gc.getState(groupID))
 
 	// Now wait until that new member's session expires
 	time.Sleep(2 * newMemberJoinTimeout)
@@ -1585,7 +1592,7 @@ func TestRejoinLeaderTriggersRebalance(t *testing.T) {
 	require.True(t, ok)
 	gc.JoinGroup(0, groupID, defaultClientID, leader, defaultProtocolType, p.([]ProtocolInfo), defaultSessionTimeout,
 		rebalanceTimeout, func(result JoinResult) {})
-	require.Equal(t, statePreRebalance, gc.getState(groupID))
+	require.Equal(t, statePreReBalance, gc.getState(groupID))
 }
 
 func addMemberWithSessionTimeout(gc *Coordinator, groupID string, sessionTimeout time.Duration) chan JoinResult {
@@ -1599,9 +1606,9 @@ func addMemberWithSessionTimeout(gc *Coordinator, groupID string, sessionTimeout
 }
 
 func TestSessionTimeoutWhenActive(t *testing.T) {
-	gcs := createCoordinatorsWithCfgSetter(t, 3, func(config *conf.Config) {
-		config.KafkaInitialJoinDelay = 100 * time.Millisecond
-		config.KafkaMinSessionTimeout = 1 * time.Millisecond
+	gcs := createCoordinatorsWithCfgSetter(t, 3, func(config *Conf) {
+		config.InitialJoinDelay = 100 * time.Millisecond
+		config.MinSessionTimeout = 1 * time.Millisecond
 	})
 	defer stopCoordinators(t, gcs)
 
@@ -1631,7 +1638,7 @@ func TestSessionTimeoutWhenActive(t *testing.T) {
 		isLeader := res.LeaderMemberID == res.MemberID
 		members.Store(res.MemberID, isLeader)
 	}
-	require.Equal(t, stateAwaitingRebalance, gc.getState(groupID))
+	require.Equal(t, stateAwaitingReBalance, gc.getState(groupID))
 	syncGroup(groupID, 3, &members, gcs)
 	require.Equal(t, stateActive, gc.getState(groupID))
 	require.True(t, gc.groupHasMember(groupID, member1))
@@ -1657,9 +1664,10 @@ func TestSessionTimeoutWhenActive(t *testing.T) {
 }
 
 func findNode(groupID string, gcs []*Coordinator) *Coordinator {
-	nodeID := rand.Intn(len(gcs))
-	leader := gcs[nodeID].FindCoordinator(groupID)
-	return gcs[leader]
+	//nodeID := rand.Intn(len(gcs))
+	//leader := gcs[nodeID].FindCoordinator(groupID)
+	//return gcs[leader]
+	return nil
 }
 
 func callJoinGroupSync(gc *Coordinator, groupID string, clientID string, memberID string, protocolType string, protocols []ProtocolInfo, sessionTimeout time.Duration,
@@ -1678,72 +1686,30 @@ func callJoinGroupSyncWithApiVersion(gc *Coordinator, groupID string, clientID s
 	return res
 }
 
-func newTestConsumerInfoProvider(slabID int, mappingID string, partitions int, numProcessors int) ConsumerInfoProvider {
-	partitionScheme := opers.NewPartitionScheme(mappingID, partitions, false, numProcessors)
-	return &testConsumerInfoProvider{
-		slabID:          slabID,
-		partitionScheme: &partitionScheme,
-	}
-}
-
-type testConsumerInfoProvider struct {
-	slabID          int
-	partitionScheme *opers.PartitionScheme
-}
-
-func (t *testConsumerInfoProvider) PartitionScheme() *opers.PartitionScheme {
-	return t.partitionScheme
-}
-
-func (t *testConsumerInfoProvider) SlabID() int {
-	return t.slabID
-}
-
-func (t *testConsumerInfoProvider) EarliestOffset(int) (int64, int64, bool) {
-	return 0, 0, false
-}
-
-func (t *testConsumerInfoProvider) LatestOffset(int) (int64, int64, bool, error) {
-	return 0, 0, false, nil
-}
-
-func (t *testConsumerInfoProvider) OffsetByTimestamp(types.Timestamp, int) (int64, int64, bool) {
-	return 0, 0, false
-}
-
 func createCoordinators(t *testing.T, initialJoinDelay time.Duration, numNodes int) []*Coordinator {
-	return createCoordinatorsWithCfgSetter(t, numNodes, func(config *conf.Config) {
-		config.KafkaInitialJoinDelay = initialJoinDelay
+	return createCoordinatorsWithCfgSetter(t, numNodes, func(config *Conf) {
+		config.InitialJoinDelay = initialJoinDelay
 	})
 }
 
-func createCoordinatorsWithCfgSetter(t *testing.T, numNodes int, cfgSetter func(config *conf.Config)) []*Coordinator {
-	procProvider := &testProcessorProvider{
-		partitionNodeMap: map[int]int{
-			0: 0,
-			1: 1,
-			2: 2,
-			3: 0,
-			4: 1,
-			5: 2,
-			6: 0,
-			7: 1,
-			8: 2,
-		},
+func createCoordinatorsWithCfgSetter(t *testing.T, numNodes int, cfgSetter func(cfg *Conf)) []*Coordinator {
+	topicProvider := &testTopicInfoProvider{
+		infos: map[string]topicmeta.TopicInfo{},
 	}
-	metaProvider := &testMetadataProvider{}
-	forwarder := &testBatchForwarder{}
-	streamMgr := &testStreamMgr{}
+	controlClient := &testControlClient{}
+	clientCache := control.NewClientCache(10, func() (control.Client, error) {
+		return controlClient, nil
+	})
+	pusherClient := &testPusherClient{}
+	tableGetter := &testTableGetter{}
 	gcs := make([]*Coordinator, numNodes)
 	for i := 0; i < numNodes; i++ {
-		cfg := &conf.Config{}
-		cfg.ApplyDefaults()
-		cfg.NodeID = i
+		cfg := NewConf()
 		if cfgSetter != nil {
-			cfgSetter(cfg)
+			cfgSetter(&cfg)
 		}
 		var err error
-		gcs[i], err = NewGroupCoordinator(cfg, procProvider, streamMgr, metaProvider, forwarder)
+		gcs[i], err = NewCoordinator(cfg, topicProvider, clientCache, pusherClient, tableGetter.getTable)
 		require.NoError(t, err)
 		err = gcs[i].Start()
 		require.NoError(t, err)
@@ -1756,4 +1722,114 @@ func stopCoordinators(t *testing.T, gcs []*Coordinator) {
 		err := gc.Stop()
 		require.NoError(t, err)
 	}
+}
+
+func stopCoordinator(t *testing.T, gc *Coordinator) {
+	err := gc.Stop()
+	require.NoError(t, err)
+}
+
+func createCoordinator(t *testing.T) *Coordinator {
+	return createCoordinatorWithCfgSetter(t, nil)
+}
+
+func createCoordinatorWithCfgSetter(t *testing.T, cfgSetter func(cfg *Conf)) *Coordinator {
+	topicProvider := &testTopicInfoProvider{
+		infos: map[string]topicmeta.TopicInfo{},
+	}
+	controlClient := &testControlClient{}
+	clientCache := control.NewClientCache(10, func() (control.Client, error) {
+		return controlClient, nil
+	})
+	pusherClient := &testPusherClient{}
+	tableGetter := &testTableGetter{}
+	cfg := NewConf()
+	if cfgSetter != nil {
+		cfgSetter(&cfg)
+	}
+	gc, err := NewCoordinator(cfg, topicProvider, clientCache, pusherClient, tableGetter.getTable)
+	require.NoError(t, err)
+	err = gc.Start()
+	require.NoError(t, err)
+	return gc
+}
+
+type testTopicInfoProvider struct {
+	infos map[string]topicmeta.TopicInfo
+}
+
+func (t *testTopicInfoProvider) GetTopicInfo(topicName string) (topicmeta.TopicInfo, error) {
+	info, ok := t.infos[topicName]
+	if !ok {
+		return topicmeta.TopicInfo{}, common.NewTektiteErrorf(common.TopicDoesNotExist,
+			"unknown topic: %s", topicName)
+	}
+	return info, nil
+}
+
+type testControlClient struct {
+	groupCoordinatorAddress string
+}
+
+func (t *testControlClient) GetOffsets(infos []offsets.GetOffsetTopicInfo) ([]offsets.OffsetTopicInfo, int64, error) {
+	panic("should not be called")
+}
+
+func (t *testControlClient) ApplyLsmChanges(regBatch lsm.RegistrationBatch) error {
+	panic("should not be called")
+}
+
+func (t *testControlClient) RegisterL0Table(sequence int64, regEntry lsm.RegistrationEntry) error {
+	panic("should not be called")
+}
+
+func (t *testControlClient) QueryTablesInRange(keyStart []byte, keyEnd []byte) (lsm.OverlappingTables, error) {
+	panic("should not be called")
+}
+
+func (t *testControlClient) RegisterTableListener(topicID int, partitionID int, memberID string, resetSequence int64) (int64, error) {
+	panic("should not be called")
+}
+
+func (t *testControlClient) PollForJob() (lsm.CompactionJob, error) {
+	panic("should not be called")
+}
+
+func (t *testControlClient) GetTopicInfo(topicName string) (topicmeta.TopicInfo, int, error) {
+	panic("should not be called")
+}
+
+func (t *testControlClient) CreateTopic(topicInfo topicmeta.TopicInfo) error {
+	panic("should not be called")
+}
+
+func (t *testControlClient) DeleteTopic(topicName string) error {
+	panic("should not be called")
+}
+
+func (t *testControlClient) GetGroupCoordinatorAddress(groupID string) (string, error) {
+	return t.groupCoordinatorAddress, nil
+}
+
+func (t *testControlClient) Close() error {
+	panic("should not be called")
+}
+
+type testPusherClient struct {
+	lock       sync.Mutex
+	writtenKVs []common.KV
+}
+
+func (t *testPusherClient) WriteKVs(kvs []common.KV) error {
+	t.lock.Lock()
+	defer t.lock.Unlock()
+	t.writtenKVs = append(t.writtenKVs, kvs...)
+	return nil
+}
+
+type testTableGetter struct {
+}
+
+func (t *testTableGetter) getTable(tableID sst.SSTableID) (*sst.SSTable, error) {
+	return nil, nil
 }
