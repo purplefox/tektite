@@ -725,7 +725,7 @@ func (g *group) offsetCommit(req *kafkaprotocol.OffsetCommitRequest, resp *kafka
 	for i, topicData := range req.Topics {
 		resp.Topics[i].Name = topicData.Name
 		foundTopic := false
-		topicInfo, err := g.gc.topicProvider.GetTopicInfo(*topicData.Name)
+		info, err := g.gc.topicProvider.GetTopicInfo(*topicData.Name)
 		if err != nil {
 			log.Errorf("failed to find topic %s", *topicData.Name)
 		} else {
@@ -739,14 +739,14 @@ func (g *group) offsetCommit(req *kafkaprotocol.OffsetCommitRequest, resp *kafka
 			}
 			offset := partitionData.CommittedOffset
 			// key is [partition_hash, topic_id, partition_id] value is [offset]
-			key := g.createOffsetKey(topicInfo.ID, int(partitionData.PartitionIndex))
+			key := g.createOffsetKey(info.ID, int(partitionData.PartitionIndex))
 			value := make([]byte, 8)
 			binary.BigEndian.PutUint64(value, uint64(offset))
 			kvs = append(kvs, common.KV{
 				Key:   key,
 				Value: value,
 			})
-			log.Debugf("group %s topic %d partition %d committing offset %d", g.id, topicInfo.ID, partitionData.PartitionIndex, offset)
+			log.Debugf("group %s topic %d partition %d committing offset %d", g.id, info.ID, partitionData.PartitionIndex, offset)
 		}
 	}
 	if len(kvs) > 1 {

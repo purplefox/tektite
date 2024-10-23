@@ -13,15 +13,15 @@ import (
 )
 
 type Coordinator struct {
-	cfg             Conf
-	clusterMemberID string
-	topicProvider   topicInfoProvider
-	clientCache     *control.ClientCache
-	pusherClient    tablePusherClient
-	tableGetter     sst.TableGetter
-	groups          map[string]*group
-	groupsLock      sync.RWMutex
-	timers          sync.Map
+	cfg           Conf
+	address       string
+	topicProvider topicInfoProvider
+	clientCache   *control.ClientCache
+	pusherClient  tablePusherClient
+	tableGetter   sst.TableGetter
+	groups        map[string]*group
+	groupsLock    sync.RWMutex
+	timers        sync.Map
 }
 
 type topicInfoProvider interface {
@@ -29,7 +29,7 @@ type topicInfoProvider interface {
 }
 
 type tablePusherClient interface {
-	// Note that groupEpoch here is different to the generation id which increments on each rebalance
+	// WriteOffsets Note that groupEpoch here is different to the generation id which increments on each rebalance
 	WriteOffsets(kvs []common.KV, groupID string, groupEpoch int32) error
 }
 
@@ -56,16 +56,16 @@ const (
 	DefaultNewMemberJoinTimeout = 5 * time.Minute
 )
 
-func NewCoordinator(cfg Conf, clusterMemberID string, topicProvider topicInfoProvider, controlClientCache *control.ClientCache,
+func NewCoordinator(cfg Conf, address string, topicProvider topicInfoProvider, controlClientCache *control.ClientCache,
 	pusherClient tablePusherClient, tableGetter sst.TableGetter) (*Coordinator, error) {
 	return &Coordinator{
-		cfg:             cfg,
-		clusterMemberID: clusterMemberID,
-		groups:          map[string]*group{},
-		topicProvider:   topicProvider,
-		clientCache:     controlClientCache,
-		pusherClient:    pusherClient,
-		tableGetter:     tableGetter,
+		cfg:           cfg,
+		address:       address,
+		groups:        map[string]*group{},
+		topicProvider: topicProvider,
+		clientCache:   controlClientCache,
+		pusherClient:  pusherClient,
+		tableGetter:   tableGetter,
 	}, nil
 }
 
@@ -94,8 +94,8 @@ func (gc *Coordinator) FindCoordinator(groupID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	address, _, err := cl.GetGroupCoordinatorInfo(groupID)
-	return address, err
+	clusterMemberID, _, err := cl.GetGroupCoordinatorInfo(groupID)
+	return clusterMemberID, err
 }
 
 func (gc *Coordinator) JoinGroup(apiVersion int16, groupID string, clientID string, memberID string, protocolType string,
@@ -112,13 +112,13 @@ func (gc *Coordinator) JoinGroup(apiVersion int16, groupID string, clientID stri
 			gc.sendJoinError(completionFunc, kafkaprotocol.ErrorCodeLeaderNotAvailable)
 			return
 		}
-		clusterMemberID, groupEpoch, err := cl.GetGroupCoordinatorInfo(groupID)
+		address, groupEpoch, err := cl.GetGroupCoordinatorInfo(groupID)
 		if err != nil {
 			log.Warnf("failed to get coordinator info: %v", err)
 			gc.sendJoinError(completionFunc, kafkaprotocol.ErrorCodeLeaderNotAvailable)
 			return
 		}
-		if clusterMemberID != gc.clusterMemberID {
+		if address != gc.address {
 			gc.sendJoinError(completionFunc, kafkaprotocol.ErrorCodeNotCoordinator)
 			return
 		}
@@ -197,11 +197,6 @@ func (gc *Coordinator) getGroup(groupID string) (*group, bool) {
 	defer gc.groupsLock.RUnlock()
 	g, ok := gc.groups[groupID]
 	return g, ok
-}
-
-func (gc *Coordinator) isCoordinator(groupID string) bool {
-
-	return false
 }
 
 func (gc *Coordinator) sendJoinError(completionFunc JoinCompletion, errorCode int) {

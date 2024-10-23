@@ -30,28 +30,13 @@ const (
 TODO test offset commit, offset fetch, offset load etc
 */
 
-//func TestFindCoordinator(t *testing.T) {
-//	gcs := createCoordinators(t, defaultInitialJoinDelay, 3)
-//	defer stopCoordinators(t, gcs)
-//	for i := 0; i < 100; i++ {
-//		groupName := uuid.New().String()
-//		nodeID := -1
-//		// Should evaluate the same on all nodes
-//		for j, gc := range gcs {
-//			theNodeID := gc.FindCoordinator(groupName)
-//			if j > 0 {
-//				require.Equal(t, nodeID, theNodeID)
-//			} else {
-//				nodeID = theNodeID
-//			}
-//		}
-//		require.True(t, nodeID >= 0 && nodeID <= 2)
-//	}
-//}
-
-/*
-Refactor these tests to only create one coordinator - no point in having many
-*/
+func TestFindCoordinator(t *testing.T) {
+	gc := createCoordinator(t)
+	defer stopCoordinator(t, gc)
+	address, err := gc.FindCoordinator(uuid.New().String())
+	require.NoError(t, err)
+	require.Equal(t, gc.address, address)
+}
 
 func TestInitialJoinNoMemberID(t *testing.T) {
 	gc := createCoordinator(t)
@@ -77,8 +62,8 @@ func TestInitialJoinNoMemberID(t *testing.T) {
 }
 
 func TestInitialMemberJoinAfterDelay(t *testing.T) {
-	gcs := createCoordinators(t, defaultInitialJoinDelay, 3)
-	defer stopCoordinators(t, gcs)
+	gc := createCoordinator(t)
+	defer stopCoordinator(t, gc)
 
 	protocolMetadata := []byte("protocol1_bytes")
 	protocols := []ProtocolInfo{
@@ -86,7 +71,6 @@ func TestInitialMemberJoinAfterDelay(t *testing.T) {
 	}
 	groupID := uuid.New().String()
 	clientID := uuid.New().String()
-	gc := findNode(groupID, gcs)
 	start := time.Now()
 	res := callJoinGroupSync(gc, groupID, clientID, "", defaultProtocolType,
 		protocols, defaultSessionTimeout, defaultRebalanceTimeout)
@@ -104,16 +88,16 @@ func TestInitialMemberJoinAfterDelay(t *testing.T) {
 }
 
 func TestJoinMultipleMembersBeforeInitialDelay(t *testing.T) {
-
 	initialJoinDelay := 250 * time.Millisecond
-	gcs := createCoordinators(t, initialJoinDelay, 3)
-	defer stopCoordinators(t, gcs)
+	gc, _ := createCoordinatorWithCfgSetter(t, func(cfg *Conf) {
+		cfg.InitialJoinDelay = initialJoinDelay
+	})
+	defer stopCoordinator(t, gc)
 
 	groupID := uuid.New().String()
 	var memberMetaDataMap sync.Map
 
 	numMembers := 10
-	gc := findNode(groupID, gcs)
 	chans := make([]chan JoinResult, numMembers)
 	start := time.Now()
 	joinWg := sync.WaitGroup{}
@@ -161,14 +145,15 @@ func TestExtendInitialJoinDelayToRebalanceTimeout(t *testing.T) {
 
 	initialJoinDelay := 100 * time.Millisecond
 	rebalanceTimeout := 500 * time.Millisecond
-	gcs := createCoordinators(t, initialJoinDelay, 3)
-	defer stopCoordinators(t, gcs)
+	gc, _ := createCoordinatorWithCfgSetter(t, func(cfg *Conf) {
+		cfg.InitialJoinDelay = initialJoinDelay
+	})
+	defer stopCoordinator(t, gc)
 
 	groupID := uuid.New().String()
 	var memberMetaDataMap sync.Map
 
 	numMembers := 10
-	gc := findNode(groupID, gcs)
 	chans := make([]chan JoinResult, numMembers)
 	start := time.Now()
 	wg := sync.WaitGroup{}
@@ -245,11 +230,10 @@ func TestChooseProtocol(t *testing.T) {
 }
 
 func testChooseProtocol(t *testing.T, infos [][]ProtocolInfo, expectedProtocol string) {
-	gcs := createCoordinators(t, defaultInitialJoinDelay, 3)
-	defer stopCoordinators(t, gcs)
+	gc := createCoordinator(t)
+	defer stopCoordinator(t, gc)
 	groupID := uuid.New().String()
 
-	gc := findNode(groupID, gcs)
 	chans := make([]chan JoinResult, len(infos))
 	for i, protocolInfos := range infos {
 		ch := make(chan JoinResult, 1)
@@ -267,10 +251,9 @@ func testChooseProtocol(t *testing.T, infos [][]ProtocolInfo, expectedProtocol s
 }
 
 func TestJoinUnsupportedProtocol(t *testing.T) {
-	gcs := createCoordinators(t, defaultInitialJoinDelay, 3)
-	defer stopCoordinators(t, gcs)
+	gc := createCoordinator(t)
+	defer stopCoordinator(t, gc)
 	groupID := uuid.New().String()
-	gc := findNode(groupID, gcs)
 	protocols1 := []ProtocolInfo{{"prot1", []byte("foo")}, {"prot2", []byte("foo")}}
 	res := callJoinGroupSync(gc, groupID, defaultClientID, "", "pt1", protocols1, defaultSessionTimeout, defaultRebalanceTimeout)
 	res = callJoinGroupSync(gc, groupID, defaultClientID, res.MemberID, "pt1", protocols1, defaultSessionTimeout, defaultRebalanceTimeout)
@@ -281,30 +264,25 @@ func TestJoinUnsupportedProtocol(t *testing.T) {
 }
 
 func TestJoinNotController(t *testing.T) {
-	gcs := createCoordinators(t, defaultInitialJoinDelay, 3)
-	defer stopCoordinators(t, gcs)
-	for i := 0; i < 10; i++ {
-		groupID := uuid.New().String()
-		coordinator := findNode(groupID, gcs)
-		for _, gc := range gcs {
-			if gc != coordinator {
-				res := callJoinGroupSync(gc, groupID, defaultClientID, "", defaultProtocolType,
-					nil, 0, 0)
-				require.Equal(t, kafkaprotocol.ErrorCodeNotCoordinator, res.ErrorCode)
-			}
-		}
-	}
+	gc, controlClient := createCoordinatorWithCfgSetter(t, nil)
+	defer stopCoordinator(t, gc)
+
+	controlClient.groupCoordinatorAddress = "foo"
+
+	res := callJoinGroupSync(gc, uuid.New().String(), defaultClientID, "", defaultProtocolType,
+		nil, defaultSessionTimeout, defaultRebalanceTimeout)
+	require.Equal(t, kafkaprotocol.ErrorCodeNotCoordinator, res.ErrorCode)
 }
 
 func TestSyncGroup(t *testing.T) {
-	gcs := createCoordinators(t, defaultInitialJoinDelay, 3)
-	defer stopCoordinators(t, gcs)
+	gc := createCoordinator(t)
+	defer stopCoordinator(t, gc)
 
 	groupID := uuid.New().String()
 
 	// First join
 	numMembers := 10
-	members, _ := setupJoinedGroup(t, numMembers, groupID, gcs)
+	members, _ := setupJoinedGroup(t, numMembers, groupID, gc)
 
 	var assignments []AssignmentInfo
 	members.Range(func(key, value any) bool {
@@ -320,7 +298,6 @@ func TestSyncGroup(t *testing.T) {
 	wg := sync.WaitGroup{}
 	wg.Add(numMembers)
 
-	gc := findNode(groupID, gcs)
 	members.Range(func(key, value any) bool {
 		memberID := key.(string)
 		isLeader := value.(bool)
@@ -349,12 +326,12 @@ func TestSyncGroup(t *testing.T) {
 }
 
 func TestJoinNewMemberWhileAwaitingRebalance(t *testing.T) {
-	gcs := createCoordinators(t, defaultInitialJoinDelay, 3)
-	defer stopCoordinators(t, gcs)
+	gc := createCoordinator(t)
+	defer stopCoordinator(t, gc)
 
 	groupID := uuid.New().String()
 	numMembers := 10
-	members, _ := setupJoinedGroup(t, numMembers, groupID, gcs)
+	members, _ := setupJoinedGroup(t, numMembers, groupID, gc)
 
 	// Call all members into sync except one member which is not the leader, at this point the
 	// sync should not complete
@@ -369,7 +346,6 @@ func TestJoinNewMemberWhileAwaitingRebalance(t *testing.T) {
 		return true
 	})
 
-	gc := findNode(groupID, gcs)
 	nonLeadersCount := 0
 	chans := make([]chan syncResult, 0, numMembers-1)
 	members.Range(func(key, value any) bool {
@@ -456,12 +432,12 @@ func TestJoinNewMemberWhileAwaitingRebalance(t *testing.T) {
 }
 
 func TestExistingMembersRejoinWithDifferentProtocolMetadataWhileAwaitingRebalance(t *testing.T) {
-	gcs := createCoordinators(t, defaultInitialJoinDelay, 3)
-	defer stopCoordinators(t, gcs)
+	gc := createCoordinator(t)
+	defer stopCoordinator(t, gc)
 
 	groupID := uuid.New().String()
 	numMembers := 10
-	members, _ := setupJoinedGroup(t, numMembers, groupID, gcs)
+	members, _ := setupJoinedGroup(t, numMembers, groupID, gc)
 
 	// Call all members into sync except one member which is not the leader, at this point the
 	// sync should not complete
@@ -476,7 +452,6 @@ func TestExistingMembersRejoinWithDifferentProtocolMetadataWhileAwaitingRebalanc
 		return true
 	})
 
-	gc := findNode(groupID, gcs)
 	nonLeadersCount := 0
 	chans := make([]chan syncResult, 0, numMembers-1)
 	members.Range(func(key, value any) bool {
@@ -551,12 +526,12 @@ func TestExistingMembersRejoinWithDifferentProtocolMetadataWhileAwaitingRebalanc
 }
 
 func TestExistingMembersRejoinWithSameProtocolMetadataWhileAwaitingRebalance(t *testing.T) {
-	gcs := createCoordinators(t, defaultInitialJoinDelay, 3)
-	defer stopCoordinators(t, gcs)
+	gc := createCoordinator(t)
+	defer stopCoordinator(t, gc)
 
 	groupID := uuid.New().String()
 	numMembers := 10
-	members, memberProtocols := setupJoinedGroup(t, numMembers, groupID, gcs)
+	members, memberProtocols := setupJoinedGroup(t, numMembers, groupID, gc)
 
 	// Call all members into sync except one member which is not the leader, at this point the
 	// sync should not complete
@@ -571,7 +546,6 @@ func TestExistingMembersRejoinWithSameProtocolMetadataWhileAwaitingRebalance(t *
 		return true
 	})
 
-	gc := findNode(groupID, gcs)
 	nonLeadersCount := 0
 	chans := make([]chan syncResult, 0, numMembers-1)
 	var memberIDs []string
@@ -668,12 +642,12 @@ func TestExistingMembersRejoinWithSameProtocolMetadataWhileAwaitingRebalance(t *
 }
 
 func TestJoinNewMemberWhileActive(t *testing.T) {
-	gcs := createCoordinators(t, defaultInitialJoinDelay, 3)
-	defer stopCoordinators(t, gcs)
+	gc := createCoordinator(t)
+	defer stopCoordinator(t, gc)
 
 	groupID := uuid.New().String()
 	numMembers := 10
-	members, _ := setupJoinedGroup(t, numMembers, groupID, gcs)
+	members, _ := setupJoinedGroup(t, numMembers, groupID, gc)
 
 	// Sync all
 	var assignments []AssignmentInfo
@@ -686,7 +660,6 @@ func TestJoinNewMemberWhileActive(t *testing.T) {
 		return true
 	})
 
-	gc := findNode(groupID, gcs)
 	chans := make([]chan syncResult, 0, numMembers-1)
 	members.Range(func(key, value any) bool {
 		memberID := key.(string)
@@ -764,12 +737,12 @@ func TestJoinNewMemberWhileActive(t *testing.T) {
 }
 
 func TestRejoinLeaderWhileActive(t *testing.T) {
-	gcs := createCoordinators(t, defaultInitialJoinDelay, 3)
-	defer stopCoordinators(t, gcs)
+	gc := createCoordinator(t)
+	defer stopCoordinator(t, gc)
 
 	groupID := uuid.New().String()
 	numMembers := 10
-	members, _ := setupJoinedGroup(t, numMembers, groupID, gcs)
+	members, _ := setupJoinedGroup(t, numMembers, groupID, gc)
 
 	// Sync all
 	var assignments []AssignmentInfo
@@ -782,7 +755,6 @@ func TestRejoinLeaderWhileActive(t *testing.T) {
 		return true
 	})
 
-	gc := findNode(groupID, gcs)
 	chans := make([]chan syncResult, 0, numMembers-1)
 	var leader string
 	members.Range(func(key, value any) bool {
@@ -870,12 +842,12 @@ func TestRejoinLeaderWhileActive(t *testing.T) {
 }
 
 func TestRejoinNonLeaderWhileActive(t *testing.T) {
-	gcs := createCoordinators(t, defaultInitialJoinDelay, 3)
-	defer stopCoordinators(t, gcs)
+	gc := createCoordinator(t)
+	defer stopCoordinator(t, gc)
 
 	groupID := uuid.New().String()
 	numMembers := 10
-	members, memberProtocols := setupJoinedGroup(t, numMembers, groupID, gcs)
+	members, memberProtocols := setupJoinedGroup(t, numMembers, groupID, gc)
 
 	// Sync all
 	var assignments []AssignmentInfo
@@ -888,7 +860,6 @@ func TestRejoinNonLeaderWhileActive(t *testing.T) {
 		return true
 	})
 
-	gc := findNode(groupID, gcs)
 	chans := make([]chan syncResult, 0, numMembers-1)
 	var leader string
 	members.Range(func(key, value any) bool {
@@ -963,11 +934,10 @@ func TestRejoinNonLeaderWhileActive(t *testing.T) {
 }
 
 func TestSyncInJoinPhaseFails(t *testing.T) {
-	gcs := createCoordinators(t, defaultInitialJoinDelay, 3)
-	defer stopCoordinators(t, gcs)
+	gc := createCoordinator(t)
+	defer stopCoordinator(t, gc)
 
 	groupID := uuid.New().String()
-	gc := findNode(groupID, gcs)
 
 	protocols := []ProtocolInfo{
 		{defaultProtocolName, []byte("protocol1_bytes")},
@@ -987,15 +957,14 @@ func TestSyncInJoinPhaseFails(t *testing.T) {
 }
 
 func TestSyncWhenActiveReturnsCurrentState(t *testing.T) {
-	gcs := createCoordinators(t, defaultInitialJoinDelay, 3)
-	defer stopCoordinators(t, gcs)
+	gc := createCoordinator(t)
+	defer stopCoordinator(t, gc)
 
 	groupID := uuid.New().String()
-	gc := findNode(groupID, gcs)
 
 	numMembers := 10
-	members, _ := setupJoinedGroup(t, numMembers, groupID, gcs)
-	assignments := syncGroup(groupID, numMembers, members, gcs)
+	members, _ := setupJoinedGroup(t, numMembers, groupID, gc)
+	assignments := syncGroup(groupID, numMembers, members, gc)
 	assignmentMap := map[string][]byte{}
 	for _, assignment := range assignments {
 		assignmentMap[assignment.MemberID] = assignment.Assignment
@@ -1033,12 +1002,11 @@ func TestSyncWhenActiveReturnsCurrentState(t *testing.T) {
 
 }
 
-func setupJoinedGroup(t *testing.T, numMembers int, groupID string, gcs []*Coordinator) (*sync.Map, *sync.Map) {
-	return setupJoinedGroupWithArgs(t, numMembers, groupID, gcs, defaultRebalanceTimeout)
+func setupJoinedGroup(t *testing.T, numMembers int, groupID string, gc *Coordinator) (*sync.Map, *sync.Map) {
+	return setupJoinedGroupWithArgs(t, numMembers, groupID, gc, defaultRebalanceTimeout)
 }
 
-func setupJoinedGroupWithArgs(t *testing.T, numMembers int, groupID string, gcs []*Coordinator, rebalanceTimeout time.Duration) (*sync.Map, *sync.Map) {
-	gc := findNode(groupID, gcs)
+func setupJoinedGroupWithArgs(t *testing.T, numMembers int, groupID string, gc *Coordinator, rebalanceTimeout time.Duration) (*sync.Map, *sync.Map) {
 	wg := sync.WaitGroup{}
 	wg.Add(numMembers)
 	members := sync.Map{}
@@ -1069,7 +1037,7 @@ type syncResult struct {
 	assignment []byte
 }
 
-func syncGroup(groupID string, numMembers int, members *sync.Map, gcs []*Coordinator) []AssignmentInfo {
+func syncGroup(groupID string, numMembers int, members *sync.Map, gc *Coordinator) []AssignmentInfo {
 	var assignments []AssignmentInfo
 	members.Range(func(key, value any) bool {
 		memberID := key.(string)
@@ -1083,7 +1051,6 @@ func syncGroup(groupID string, numMembers int, members *sync.Map, gcs []*Coordin
 	wg := sync.WaitGroup{}
 	wg.Add(numMembers)
 
-	gc := findNode(groupID, gcs)
 	members.Range(func(key, value any) bool {
 		memberID := key.(string)
 		isLeader := value.(bool)
@@ -1104,12 +1071,11 @@ func syncGroup(groupID string, numMembers int, members *sync.Map, gcs []*Coordin
 }
 
 func TestSyncWrongGeneration(t *testing.T) {
-	gcs := createCoordinators(t, defaultInitialJoinDelay, 3)
-	defer stopCoordinators(t, gcs)
+	gc := createCoordinator(t)
+	defer stopCoordinator(t, gc)
 
 	groupID := uuid.New().String()
-	gc := findNode(groupID, gcs)
-	members, _ := setupJoinedGroup(t, 1, groupID, gcs)
+	members, _ := setupJoinedGroup(t, 1, groupID, gc)
 	var memberID string
 	members.Range(func(key, value any) bool {
 		memberID = key.(string)
@@ -1125,17 +1091,16 @@ func TestSyncWrongGeneration(t *testing.T) {
 }
 
 func TestAddNewMembersAfterSync(t *testing.T) {
-	gcs := createCoordinators(t, defaultInitialJoinDelay, 3)
-	defer stopCoordinators(t, gcs)
+	gc := createCoordinator(t)
+	defer stopCoordinator(t, gc)
 
 	groupID := uuid.New().String()
 
 	numInitialMembers := 10
-	members, memberProtocols := setupJoinedGroup(t, numInitialMembers, groupID, gcs)
-	syncGroup(groupID, numInitialMembers, members, gcs)
+	members, memberProtocols := setupJoinedGroup(t, numInitialMembers, groupID, gc)
+	syncGroup(groupID, numInitialMembers, members, gc)
 
 	// Add another member
-	gc := findNode(groupID, gcs)
 
 	numNewMembers := 10
 	newMembersMap := sync.Map{}
@@ -1205,36 +1170,14 @@ func TestAddNewMembersAfterSync(t *testing.T) {
 
 }
 
-func TestSyncNotController(t *testing.T) {
-	gcs := createCoordinators(t, defaultInitialJoinDelay, 3)
-	defer stopCoordinators(t, gcs)
-
-	for i := 0; i < 10; i++ {
-		groupID := uuid.New().String()
-		coordinator := findNode(groupID, gcs)
-		for _, gc := range gcs {
-			if gc != coordinator {
-
-				ch := make(chan int, 1)
-				gc.SyncGroup(groupID, "", 1, nil, func(errorCode int, assignment []byte) {
-					ch <- errorCode
-				})
-				errorCode := <-ch
-				require.Equal(t, kafkaprotocol.ErrorCodeNotCoordinator, errorCode)
-			}
-		}
-	}
-}
-
 func TestSyncEmptyMemberID(t *testing.T) {
-	gcs := createCoordinators(t, defaultInitialJoinDelay, 3)
-	defer stopCoordinators(t, gcs)
+	gc := createCoordinator(t)
+	defer stopCoordinator(t, gc)
 
 	groupID := uuid.New().String()
-	coordinator := findNode(groupID, gcs)
 
 	ch := make(chan int, 1)
-	coordinator.SyncGroup(groupID, "", 1, nil, func(errorCode int, assignment []byte) {
+	gc.SyncGroup(groupID, "", 1, nil, func(errorCode int, assignment []byte) {
 		ch <- errorCode
 	})
 	errorCode := <-ch
@@ -1242,66 +1185,46 @@ func TestSyncEmptyMemberID(t *testing.T) {
 }
 
 func TestSyncUnknownGroupID(t *testing.T) {
-	gcs := createCoordinators(t, defaultInitialJoinDelay, 3)
-	defer stopCoordinators(t, gcs)
+	gc := createCoordinator(t)
+	defer stopCoordinator(t, gc)
 
 	groupID := uuid.New().String()
-	coordinator := findNode(groupID, gcs)
 
 	ch := make(chan int, 1)
-	coordinator.SyncGroup(groupID, "foo", 1, nil, func(errorCode int, assignment []byte) {
+	gc.SyncGroup(groupID, "foo", 1, nil, func(errorCode int, assignment []byte) {
 		ch <- errorCode
 	})
 	errorCode := <-ch
 	require.Equal(t, kafkaprotocol.ErrorCodeGroupIDNotFound, errorCode)
 }
 
-func TestHeartbeatNonCoordinator(t *testing.T) {
-	gcs := createCoordinators(t, defaultInitialJoinDelay, 3)
-	defer stopCoordinators(t, gcs)
-
-	for i := 0; i < 10; i++ {
-		groupID := uuid.New().String()
-		coordinator := findNode(groupID, gcs)
-		for _, gc := range gcs {
-			if gc != coordinator {
-				errorCode := gc.HeartbeatGroup(groupID, "foo", 1)
-				require.Equal(t, kafkaprotocol.ErrorCodeNotCoordinator, errorCode)
-			}
-		}
-	}
-}
-
 func TestHeartbeatEmptyMemberID(t *testing.T) {
-	gcs := createCoordinators(t, defaultInitialJoinDelay, 3)
-	defer stopCoordinators(t, gcs)
+	gc := createCoordinator(t)
+	defer stopCoordinator(t, gc)
 
 	groupID := uuid.New().String()
-	coordinator := findNode(groupID, gcs)
-	errorCode := coordinator.HeartbeatGroup(groupID, "", 1)
+	errorCode := gc.HeartbeatGroup(groupID, "", 1)
 	require.Equal(t, kafkaprotocol.ErrorCodeUnknownMemberID, errorCode)
 }
 
 func TestHeartbeatUnknownGroupID(t *testing.T) {
-	gcs := createCoordinators(t, defaultInitialJoinDelay, 3)
-	defer stopCoordinators(t, gcs)
+	gc := createCoordinator(t)
+	defer stopCoordinator(t, gc)
 
 	groupID := uuid.New().String()
-	coordinator := findNode(groupID, gcs)
-	errorCode := coordinator.HeartbeatGroup(groupID, "foo", 1)
+	errorCode := gc.HeartbeatGroup(groupID, "foo", 1)
 	require.Equal(t, kafkaprotocol.ErrorCodeGroupIDNotFound, errorCode)
 }
 
 func TestHeartbeatIllegalGeneration(t *testing.T) {
-	gcs := createCoordinators(t, defaultInitialJoinDelay, 3)
-	defer stopCoordinators(t, gcs)
+	gc := createCoordinator(t)
+	defer stopCoordinator(t, gc)
 
 	protocolMetadata := []byte("protocol1_bytes")
 	protocols := []ProtocolInfo{
 		{defaultProtocolName, protocolMetadata},
 	}
 	groupID := uuid.New().String()
-	gc := findNode(groupID, gcs)
 	ch := make(chan JoinResult, 1)
 	gc.JoinGroup(0, groupID, defaultClientID, "", defaultProtocolType, protocols, defaultSessionTimeout,
 		defaultRebalanceTimeout, func(result JoinResult) {
@@ -1317,12 +1240,11 @@ func TestHeartbeatIllegalGeneration(t *testing.T) {
 }
 
 func TestHeartbeatAwaitingRebalance(t *testing.T) {
-	gcs := createCoordinators(t, defaultInitialJoinDelay, 3)
-	defer stopCoordinators(t, gcs)
+	gc := createCoordinator(t)
+	defer stopCoordinator(t, gc)
 
 	groupID := uuid.New().String()
-	members, _ := setupJoinedGroup(t, 10, groupID, gcs)
-	gc := findNode(groupID, gcs)
+	members, _ := setupJoinedGroup(t, 10, groupID, gc)
 	var memberID string
 	members.Range(func(key, value any) bool {
 		memberID = key.(string)
@@ -1337,17 +1259,16 @@ func TestHeartbeatAwaitingRebalance(t *testing.T) {
 }
 
 func TestHeartbeatWhileActive(t *testing.T) {
-	gcs := createCoordinators(t, defaultInitialJoinDelay, 3)
-	defer stopCoordinators(t, gcs)
+	gc := createCoordinator(t)
+	defer stopCoordinator(t, gc)
 
 	groupID := uuid.New().String()
 	numMembers := 10
-	members, _ := setupJoinedGroup(t, numMembers, groupID, gcs)
-	syncGroup(groupID, numMembers, members, gcs)
+	members, _ := setupJoinedGroup(t, numMembers, groupID, gc)
+	syncGroup(groupID, numMembers, members, gc)
 
 	// Now group should be in active state
 
-	gc := findNode(groupID, gcs)
 	var memberID string
 	members.Range(func(key, value any) bool {
 		memberID = key.(string)
@@ -1362,15 +1283,14 @@ func TestHeartbeatWhileActive(t *testing.T) {
 }
 
 func TestJoinTimeoutMembersRemovedAndJoinCompletes(t *testing.T) {
-	gcs := createCoordinators(t, defaultInitialJoinDelay, 3)
-	defer stopCoordinators(t, gcs)
+	gc := createCoordinator(t)
+	defer stopCoordinator(t, gc)
 
 	groupID := uuid.New().String()
-	gc := findNode(groupID, gcs)
 	numMembers := 10
 	rebalanceTimeout := 1 * time.Second
-	members, memberProts := setupJoinedGroupWithArgs(t, numMembers, groupID, gcs, rebalanceTimeout)
-	syncGroup(groupID, numMembers, members, gcs)
+	members, memberProts := setupJoinedGroupWithArgs(t, numMembers, groupID, gc, rebalanceTimeout)
+	syncGroup(groupID, numMembers, members, gc)
 	require.Equal(t, stateActive, gc.getState(groupID))
 
 	// Add a new member to prompt a rebalance
@@ -1443,15 +1363,14 @@ func TestJoinTimeoutMembersRemovedAndJoinCompletes(t *testing.T) {
 }
 
 func TestJoinTimeoutMembersRemovedIncludingLeaderAndJoinCompletes(t *testing.T) {
-	gcs := createCoordinators(t, defaultInitialJoinDelay, 3)
-	defer stopCoordinators(t, gcs)
+	gc := createCoordinator(t)
+	defer stopCoordinator(t, gc)
 
 	groupID := uuid.New().String()
-	gc := findNode(groupID, gcs)
 	numMembers := 10
 	rebalanceTimeout := 1 * time.Second
-	members, memberProts := setupJoinedGroupWithArgs(t, numMembers, groupID, gcs, rebalanceTimeout)
-	syncGroup(groupID, numMembers, members, gcs)
+	members, memberProts := setupJoinedGroupWithArgs(t, numMembers, groupID, gc, rebalanceTimeout)
+	syncGroup(groupID, numMembers, members, gc)
 	require.Equal(t, stateActive, gc.getState(groupID))
 
 	// Add a new member to prompt a rebalance
@@ -1529,19 +1448,19 @@ func TestJoinTimeoutMembersRemovedIncludingLeaderAndJoinCompletes(t *testing.T) 
 
 func TestJoinTimeoutNoMembersRejoinTransitionsToEmpty(t *testing.T) {
 	newMemberJoinTimeout := 500 * time.Millisecond
-	gcs := createCoordinatorsWithCfgSetter(t, 3, func(config *Conf) {
-		config.InitialJoinDelay = 100 * time.Millisecond
-		config.MinSessionTimeout = 1 * time.Millisecond
-		config.NewMemberJoinTimeout = newMemberJoinTimeout
+
+	gc, _ := createCoordinatorWithCfgSetter(t, func(cfg *Conf) {
+		cfg.InitialJoinDelay = 100 * time.Millisecond
+		cfg.MinSessionTimeout = 1 * time.Millisecond
+		cfg.NewMemberJoinTimeout = newMemberJoinTimeout
 	})
-	defer stopCoordinators(t, gcs)
+	defer stopCoordinator(t, gc)
 
 	groupID := uuid.New().String()
-	gc := findNode(groupID, gcs)
 	numMembers := 10
 	rebalanceTimeout := 1 * time.Second
-	members, _ := setupJoinedGroupWithArgs(t, numMembers, groupID, gcs, rebalanceTimeout)
-	syncGroup(groupID, numMembers, members, gcs)
+	members, _ := setupJoinedGroupWithArgs(t, numMembers, groupID, gc, rebalanceTimeout)
+	syncGroup(groupID, numMembers, members, gc)
 	require.Equal(t, stateActive, gc.getState(groupID))
 
 	// Add a new member to prompt a rebalance
@@ -1567,15 +1486,14 @@ func TestJoinTimeoutNoMembersRejoinTransitionsToEmpty(t *testing.T) {
 }
 
 func TestRejoinLeaderTriggersRebalance(t *testing.T) {
-	gcs := createCoordinators(t, defaultInitialJoinDelay, 3)
-	defer stopCoordinators(t, gcs)
+	gc := createCoordinator(t)
+	defer stopCoordinator(t, gc)
 
 	groupID := uuid.New().String()
-	gc := findNode(groupID, gcs)
 	numMembers := 10
 	rebalanceTimeout := 1 * time.Second
-	members, memberProts := setupJoinedGroupWithArgs(t, numMembers, groupID, gcs, rebalanceTimeout)
-	syncGroup(groupID, numMembers, members, gcs)
+	members, memberProts := setupJoinedGroupWithArgs(t, numMembers, groupID, gc, rebalanceTimeout)
+	syncGroup(groupID, numMembers, members, gc)
 	require.Equal(t, stateActive, gc.getState(groupID))
 
 	var leader string
@@ -1606,14 +1524,13 @@ func addMemberWithSessionTimeout(gc *Coordinator, groupID string, sessionTimeout
 }
 
 func TestSessionTimeoutWhenActive(t *testing.T) {
-	gcs := createCoordinatorsWithCfgSetter(t, 3, func(config *Conf) {
+	gc, _ := createCoordinatorWithCfgSetter(t, func(config *Conf) {
 		config.InitialJoinDelay = 100 * time.Millisecond
 		config.MinSessionTimeout = 1 * time.Millisecond
 	})
-	defer stopCoordinators(t, gcs)
+	defer stopCoordinator(t, gc)
 
 	groupID := uuid.New().String()
-	gc := findNode(groupID, gcs)
 
 	var results []JoinResult
 
@@ -1639,7 +1556,7 @@ func TestSessionTimeoutWhenActive(t *testing.T) {
 		members.Store(res.MemberID, isLeader)
 	}
 	require.Equal(t, stateAwaitingReBalance, gc.getState(groupID))
-	syncGroup(groupID, 3, &members, gcs)
+	syncGroup(groupID, 3, &members, gc)
 	require.Equal(t, stateActive, gc.getState(groupID))
 	require.True(t, gc.groupHasMember(groupID, member1))
 	require.True(t, gc.groupHasMember(groupID, member2))
@@ -1663,13 +1580,6 @@ func TestSessionTimeoutWhenActive(t *testing.T) {
 	require.Equal(t, stateEmpty, gc.getState(groupID))
 }
 
-func findNode(groupID string, gcs []*Coordinator) *Coordinator {
-	//nodeID := rand.Intn(len(gcs))
-	//leader := gcs[nodeID].FindCoordinator(groupID)
-	//return gcs[leader]
-	return nil
-}
-
 func callJoinGroupSync(gc *Coordinator, groupID string, clientID string, memberID string, protocolType string, protocols []ProtocolInfo, sessionTimeout time.Duration,
 	rebalanceTimeout time.Duration) JoinResult {
 	return callJoinGroupSyncWithApiVersion(gc, groupID, clientID, memberID, protocolType, protocols, sessionTimeout, rebalanceTimeout,
@@ -1686,58 +1596,26 @@ func callJoinGroupSyncWithApiVersion(gc *Coordinator, groupID string, clientID s
 	return res
 }
 
-func createCoordinators(t *testing.T, initialJoinDelay time.Duration, numNodes int) []*Coordinator {
-	return createCoordinatorsWithCfgSetter(t, numNodes, func(config *Conf) {
-		config.InitialJoinDelay = initialJoinDelay
-	})
-}
-
-func createCoordinatorsWithCfgSetter(t *testing.T, numNodes int, cfgSetter func(cfg *Conf)) []*Coordinator {
-	topicProvider := &testTopicInfoProvider{
-		infos: map[string]topicmeta.TopicInfo{},
-	}
-	controlClient := &testControlClient{}
-	clientCache := control.NewClientCache(10, func() (control.Client, error) {
-		return controlClient, nil
-	})
-	pusherClient := &testPusherClient{}
-	tableGetter := &testTableGetter{}
-	gcs := make([]*Coordinator, numNodes)
-	for i := 0; i < numNodes; i++ {
-		cfg := NewConf()
-		if cfgSetter != nil {
-			cfgSetter(&cfg)
-		}
-		var err error
-		gcs[i], err = NewCoordinator(cfg, topicProvider, clientCache, pusherClient, tableGetter.getTable)
-		require.NoError(t, err)
-		err = gcs[i].Start()
-		require.NoError(t, err)
-	}
-	return gcs
-}
-
-func stopCoordinators(t *testing.T, gcs []*Coordinator) {
-	for _, gc := range gcs {
-		err := gc.Stop()
-		require.NoError(t, err)
-	}
-}
-
 func stopCoordinator(t *testing.T, gc *Coordinator) {
 	err := gc.Stop()
 	require.NoError(t, err)
 }
 
 func createCoordinator(t *testing.T) *Coordinator {
-	return createCoordinatorWithCfgSetter(t, nil)
+	gc, _ := createCoordinatorWithCfgSetter(t, func(cfg *Conf) {
+		cfg.InitialJoinDelay = defaultInitialJoinDelay
+	})
+	return gc
 }
 
-func createCoordinatorWithCfgSetter(t *testing.T, cfgSetter func(cfg *Conf)) *Coordinator {
+func createCoordinatorWithCfgSetter(t *testing.T, cfgSetter func(cfg *Conf)) (*Coordinator, *testControlClient) {
 	topicProvider := &testTopicInfoProvider{
 		infos: map[string]topicmeta.TopicInfo{},
 	}
-	controlClient := &testControlClient{}
+	address := uuid.New().String()
+	controlClient := &testControlClient{
+		groupCoordinatorAddress: address,
+	}
 	clientCache := control.NewClientCache(10, func() (control.Client, error) {
 		return controlClient, nil
 	})
@@ -1747,11 +1625,11 @@ func createCoordinatorWithCfgSetter(t *testing.T, cfgSetter func(cfg *Conf)) *Co
 	if cfgSetter != nil {
 		cfgSetter(&cfg)
 	}
-	gc, err := NewCoordinator(cfg, topicProvider, clientCache, pusherClient, tableGetter.getTable)
+	gc, err := NewCoordinator(cfg, address, topicProvider, clientCache, pusherClient, tableGetter.getTable)
 	require.NoError(t, err)
 	err = gc.Start()
 	require.NoError(t, err)
-	return gc
+	return gc, controlClient
 }
 
 type testTopicInfoProvider struct {
@@ -1769,6 +1647,7 @@ func (t *testTopicInfoProvider) GetTopicInfo(topicName string) (topicmeta.TopicI
 
 type testControlClient struct {
 	groupCoordinatorAddress string
+	groupEpoch              int32
 }
 
 func (t *testControlClient) GetOffsets(infos []offsets.GetOffsetTopicInfo) ([]offsets.OffsetTopicInfo, int64, error) {
@@ -1807,8 +1686,8 @@ func (t *testControlClient) DeleteTopic(topicName string) error {
 	panic("should not be called")
 }
 
-func (t *testControlClient) GetGroupCoordinatorInfo(groupID string) (string, error) {
-	return t.groupCoordinatorAddress, nil
+func (t *testControlClient) GetGroupCoordinatorInfo(groupID string) (memberID string, groupEpoch int32, err error) {
+	return t.groupCoordinatorAddress, t.groupEpoch, nil
 }
 
 func (t *testControlClient) Close() error {
@@ -1820,7 +1699,7 @@ type testPusherClient struct {
 	writtenKVs []common.KV
 }
 
-func (t *testPusherClient) WriteKVs(kvs []common.KV) error {
+func (t *testPusherClient) WriteOffsets(kvs []common.KV, groupID string, groupEpoch int32) error {
 	t.lock.Lock()
 	defer t.lock.Unlock()
 	t.writtenKVs = append(t.writtenKVs, kvs...)

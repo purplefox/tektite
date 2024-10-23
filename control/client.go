@@ -29,7 +29,7 @@ type Client interface {
 
 	DeleteTopic(topicName string) error
 
-	GetGroupCoordinatorInfo(groupID string) (memberID string, groupEpoch int32, err error)
+	GetGroupCoordinatorInfo(groupID string) (address string, groupEpoch int32, err error)
 
 	Close() error
 }
