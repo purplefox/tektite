@@ -29,10 +29,12 @@ type Client interface {
 
 	DeleteTopic(topicName string) error
 
-	GetGroupCoordinatorAddress(groupID string) (string, error)
+	GetGroupCoordinatorInfo(groupID string) (memberID string, groupEpoch int32, err error)
 
 	Close() error
 }
+
+
 
 // on error, the caller must close the connection
 type client struct {
@@ -197,9 +199,9 @@ func (c *client) DeleteTopic(topicName string) error {
 	return err
 }
 
-func (c *client) GetGroupCoordinatorAddress(groupID string) (string, error) {
+func (c *client) GetGroupCoordinatorInfo(groupID string) (string, int32, error) {
 	// TODO
-	return "", nil
+	return "", 0, nil
 }
 
 func (c *client) Close() error {

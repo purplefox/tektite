@@ -1807,7 +1807,7 @@ func (t *testControlClient) DeleteTopic(topicName string) error {
 	panic("should not be called")
 }
 
-func (t *testControlClient) GetGroupCoordinatorAddress(groupID string) (string, error) {
+func (t *testControlClient) GetGroupCoordinatorInfo(groupID string) (string, error) {
 	return t.groupCoordinatorAddress, nil
 }
 

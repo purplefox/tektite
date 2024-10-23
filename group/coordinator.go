@@ -4,6 +4,7 @@ import (
 	"github.com/spirit-labs/tektite/common"
 	"github.com/spirit-labs/tektite/control"
 	"github.com/spirit-labs/tektite/kafkaprotocol"
+	log "github.com/spirit-labs/tektite/logger"
 	"github.com/spirit-labs/tektite/parthash"
 	"github.com/spirit-labs/tektite/sst"
 	"github.com/spirit-labs/tektite/topicmeta"
@@ -12,14 +13,15 @@ import (
 )
 
 type Coordinator struct {
-	cfg           Conf
-	topicProvider topicInfoProvider
-	clientCache   *control.ClientCache
-	pusherClient  tablePusherClient
-	tableGetter   sst.TableGetter
-	groups        map[string]*group
-	groupsLock    sync.RWMutex
-	timers        sync.Map
+	cfg             Conf
+	clusterMemberID string
+	topicProvider   topicInfoProvider
+	clientCache     *control.ClientCache
+	pusherClient    tablePusherClient
+	tableGetter     sst.TableGetter
+	groups          map[string]*group
+	groupsLock      sync.RWMutex
+	timers          sync.Map
 }
 
 type topicInfoProvider interface {
@@ -27,7 +29,8 @@ type topicInfoProvider interface {
 }
 
 type tablePusherClient interface {
-	WriteKVs(kvs []common.KV) error
+	// Note that groupEpoch here is different to the generation id which increments on each rebalance
+	WriteOffsets(kvs []common.KV, groupID string, groupEpoch int32) error
 }
 
 type Conf struct {
@@ -53,15 +56,16 @@ const (
 	DefaultNewMemberJoinTimeout = 5 * time.Minute
 )
 
-func NewCoordinator(cfg Conf, topicProvider topicInfoProvider, controlClientCache *control.ClientCache,
+func NewCoordinator(cfg Conf, clusterMemberID string, topicProvider topicInfoProvider, controlClientCache *control.ClientCache,
 	pusherClient tablePusherClient, tableGetter sst.TableGetter) (*Coordinator, error) {
 	return &Coordinator{
-		cfg:           cfg,
-		groups:        map[string]*group{},
-		topicProvider: topicProvider,
-		clientCache:   controlClientCache,
-		pusherClient:  pusherClient,
-		tableGetter:   tableGetter,
+		cfg:             cfg,
+		clusterMemberID: clusterMemberID,
+		groups:          map[string]*group{},
+		topicProvider:   topicProvider,
+		clientCache:     controlClientCache,
+		pusherClient:    pusherClient,
+		tableGetter:     tableGetter,
 	}, nil
 }
 
@@ -78,41 +82,53 @@ func (gc *Coordinator) Stop() error {
 	return nil
 }
 
+// TODO Should be called when if agent leaves cluster
+func (gc *Coordinator) clearGroups() {
+	gc.groupsLock.Lock()
+	defer gc.groupsLock.Unlock()
+	gc.groups = map[string]*group{}
+}
+
 func (gc *Coordinator) FindCoordinator(groupID string) (string, error) {
 	cl, err := gc.clientCache.GetClient()
 	if err != nil {
 		return "", err
 	}
-	return cl.GetGroupCoordinatorAddress(groupID)
+	address, _, err := cl.GetGroupCoordinatorInfo(groupID)
+	return address, err
 }
 
 func (gc *Coordinator) JoinGroup(apiVersion int16, groupID string, clientID string, memberID string, protocolType string,
 	protocols []ProtocolInfo, sessionTimeout time.Duration, reBalanceTimeout time.Duration, completionFunc JoinCompletion) {
-	if !gc.checkLeader(groupID) {
-		gc.sendJoinError(completionFunc, kafkaprotocol.ErrorCodeNotCoordinator)
-		return
-	}
 	if sessionTimeout < gc.cfg.MinSessionTimeout || sessionTimeout > gc.cfg.MaxSessionTimeout {
 		gc.sendJoinError(completionFunc, kafkaprotocol.ErrorCodeInvalidSessionTimeout)
 		return
 	}
 	g, ok := gc.getGroup(groupID)
 	if !ok {
-		var err error
-		g, err = gc.createGroup(groupID)
+		cl, err := gc.clientCache.GetClient()
 		if err != nil {
-			// FIXME??????????????? handle error
+			log.Warnf("failed to get controller client to get coordinator info: %v", err)
+			gc.sendJoinError(completionFunc, kafkaprotocol.ErrorCodeLeaderNotAvailable)
+			return
 		}
+		clusterMemberID, groupEpoch, err := cl.GetGroupCoordinatorInfo(groupID)
+		if err != nil {
+			log.Warnf("failed to get coordinator info: %v", err)
+			gc.sendJoinError(completionFunc, kafkaprotocol.ErrorCodeLeaderNotAvailable)
+			return
+		}
+		if clusterMemberID != gc.clusterMemberID {
+			gc.sendJoinError(completionFunc, kafkaprotocol.ErrorCodeNotCoordinator)
+			return
+		}
+		g = gc.createGroup(groupID, groupEpoch)
 	}
 	g.Join(apiVersion, clientID, memberID, protocolType, protocols, sessionTimeout, reBalanceTimeout, completionFunc)
 }
 
 func (gc *Coordinator) SyncGroup(groupID string, memberID string, generationID int, assignments []AssignmentInfo,
 	completionFunc SyncCompletion) {
-	if !gc.checkLeader(groupID) {
-		gc.sendSyncError(completionFunc, kafkaprotocol.ErrorCodeNotCoordinator)
-		return
-	}
 	if memberID == "" {
 		gc.sendSyncError(completionFunc, kafkaprotocol.ErrorCodeUnknownMemberID)
 		return
@@ -126,9 +142,6 @@ func (gc *Coordinator) SyncGroup(groupID string, memberID string, generationID i
 }
 
 func (gc *Coordinator) HeartbeatGroup(groupID string, memberID string, generationID int) int {
-	if !gc.checkLeader(groupID) {
-		return kafkaprotocol.ErrorCodeNotCoordinator
-	}
 	if memberID == "" {
 		return kafkaprotocol.ErrorCodeUnknownMemberID
 	}
@@ -140,9 +153,6 @@ func (gc *Coordinator) HeartbeatGroup(groupID string, memberID string, generatio
 }
 
 func (gc *Coordinator) LeaveGroup(groupID string, leaveInfos []MemberLeaveInfo) int16 {
-	if !gc.checkLeader(groupID) {
-		return kafkaprotocol.ErrorCodeNotCoordinator
-	}
 	g, ok := gc.getGroup(groupID)
 	if !ok {
 		return kafkaprotocol.ErrorCodeGroupIDNotFound
@@ -157,10 +167,6 @@ func (gc *Coordinator) OffsetCommit(req *kafkaprotocol.OffsetCommitRequest) *kaf
 		resp.Topics[i].Partitions = make([]kafkaprotocol.OffsetCommitResponseOffsetCommitResponsePartition, len(topicData.Partitions))
 	}
 	groupID := *req.GroupId
-	if !gc.checkLeader(groupID) {
-		fillAllErrorCodesForOffsetCommit(&resp, kafkaprotocol.ErrorCodeNotCoordinator)
-		return &resp
-	}
 	g, ok := gc.getGroup(groupID)
 	if !ok {
 		fillAllErrorCodesForOffsetCommit(&resp, kafkaprotocol.ErrorCodeGroupIDNotFound)
@@ -177,10 +183,6 @@ func (gc *Coordinator) OffsetFetch(req *kafkaprotocol.OffsetFetchRequest) *kafka
 		resp.Topics[i].Partitions = make([]kafkaprotocol.OffsetFetchResponseOffsetFetchResponsePartition, len(topicData.PartitionIndexes))
 	}
 	groupID := *req.GroupId
-	if !gc.checkLeader(groupID) {
-		fillAllErrorCodesForOffsetFetch(&resp, kafkaprotocol.ErrorCodeNotCoordinator)
-		return &resp
-	}
 	g, ok := gc.getGroup(groupID)
 	if !ok {
 		fillAllErrorCodesForOffsetFetch(&resp, kafkaprotocol.ErrorCodeGroupIDNotFound)
@@ -197,7 +199,8 @@ func (gc *Coordinator) getGroup(groupID string) (*group, bool) {
 	return g, ok
 }
 
-func (gc *Coordinator) checkLeader(groupID string) bool {
+func (gc *Coordinator) isCoordinator(groupID string) bool {
+
 	return false
 }
 
@@ -227,20 +230,21 @@ func (gc *Coordinator) groupHasMember(groupID string, memberID string) bool {
 	return g.hasMember(memberID)
 }
 
-func (gc *Coordinator) createGroup(groupID string) (*group, error) {
+func (gc *Coordinator) createGroup(groupID string, groupEpoch int32) *group {
 	gc.groupsLock.Lock()
 	defer gc.groupsLock.Unlock()
 	g, ok := gc.groups[groupID]
 	if ok {
-		return g, nil
+		return g
 	}
 	partHash, err := parthash.CreateHash([]byte(groupID))
 	if err != nil {
-		return nil, err
+		panic(err) // doesn't happen
 	}
 	g = &group{
 		gc:                      gc,
 		id:                      groupID,
+		groupEpoch:              groupEpoch,
 		partHash:                partHash,
 		state:                   stateEmpty,
 		members:                 map[string]*member{},
@@ -249,7 +253,7 @@ func (gc *Coordinator) createGroup(groupID string) (*group, error) {
 		committedOffsets:        map[int]map[int32]int64{},
 	}
 	gc.groups[groupID] = g
-	return g, nil
+	return g
 }
 
 func (gc *Coordinator) setTimer(timerKey string, delay time.Duration, action func()) {

@@ -33,6 +33,7 @@ type group struct {
 	stopped                 bool
 	newMemberAdded          bool
 	committedOffsets        map[int]map[int32]int64
+	groupEpoch              int32
 }
 
 type member struct {
@@ -43,6 +44,35 @@ type member struct {
 	sessionTimeout   time.Duration
 	reBalanceTimeout time.Duration
 }
+
+/*
+zombie fencing etc:
+
+1. Coordinators are started on each node. Each coordinator has a map ownedGroups which is a set of groups for which it
+is coordinator - initially this is empty. ownedGroups value is the groupEpoch - this is incremented by the controller
+each time the coordinator changes for a group.
+2. client calls FindCoordinator to get host that has coordinator for group. This proxies to the controller wich maintains
+the mapping from group to agent, and returns the value
+3. Join (or Sync etc) request hits agent for a group. It checks in ownedGroups to see if it is the coordinator for the group
+if no entry in map, then it calls the controller to get the owner, if not the owner then it returns an error, otherwise
+adds entry to map.
+4. OffsetCommit is handled - writeOffsets is called on TablePusher passing groupID and groupEpoch. When table write() is called
+in same call as GetOffsets we also pass the group IDs and epochs of any offsets in the table. The controller compares these
+with current epochs for the groups and returns an error if they don't match. The table is then pushed without the errord offsets
+and the error is passed back to the group which called writeOffsets which is blocking and returns an error to the caller.
+
+What if:
+
+* Agent is coordinator for group, then becomes zombie.
+* Members join and consume messages from the zombie group
+* Same agent rejoins the cluster and it becomes the coordinator again
+* offsets from when it was zombie are attempted to be commmitted - they get committed?
+
+we can prevent this by:
+
+* Have a membership listener - when agent joins the cluster the offsetsMap is cleared
+
+*/
 
 func (g *group) Join(apiVersion int16, clientID string, memberID string, protocolType string, protocols []ProtocolInfo,
 	sessionTimeout time.Duration, reBalanceTimeout time.Duration, completionFunc JoinCompletion) {
@@ -725,7 +755,7 @@ func (g *group) offsetCommit(req *kafkaprotocol.OffsetCommitRequest, resp *kafka
 			return bytes.Compare(kvs[i].Key, kvs[j].Key) < 0
 		})
 	}
-	if err := g.gc.pusherClient.WriteKVs(kvs); err != nil {
+	if err := g.gc.pusherClient.WriteOffsets(kvs, g.id, int32(g.generationID)); err != nil {
 		//// ????????????????? FIXME handle this
 	}
 }
