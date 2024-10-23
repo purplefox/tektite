@@ -723,7 +723,6 @@ func (g *group) offsetCommit(req *kafkaprotocol.OffsetCommitRequest, resp *kafka
 	}
 	var kvs []common.KV
 	for i, topicData := range req.Topics {
-		resp.Topics[i].Name = topicData.Name
 		foundTopic := false
 		info, err := g.gc.topicProvider.GetTopicInfo(*topicData.Name)
 		if err != nil {
@@ -732,14 +731,13 @@ func (g *group) offsetCommit(req *kafkaprotocol.OffsetCommitRequest, resp *kafka
 			foundTopic = true
 		}
 		for j, partitionData := range topicData.Partitions {
-			resp.Topics[i].Partitions[j].PartitionIndex = partitionData.PartitionIndex
 			if !foundTopic {
 				resp.Topics[i].Partitions[j].ErrorCode = kafkaprotocol.ErrorCodeUnknownTopicOrPartition
 				continue
 			}
 			offset := partitionData.CommittedOffset
 			// key is [partition_hash, topic_id, partition_id] value is [offset]
-			key := g.createOffsetKey(info.ID, int(partitionData.PartitionIndex))
+			key := createOffsetKey(g.partHash, info.ID, int(partitionData.PartitionIndex))
 			value := make([]byte, 8)
 			binary.BigEndian.PutUint64(value, uint64(offset))
 			kvs = append(kvs, common.KV{
@@ -755,21 +753,29 @@ func (g *group) offsetCommit(req *kafkaprotocol.OffsetCommitRequest, resp *kafka
 			return bytes.Compare(kvs[i].Key, kvs[j].Key) < 0
 		})
 	}
-	if err := g.gc.pusherClient.WriteOffsets(kvs, g.id, int32(g.generationID)); err != nil {
-		//// ????????????????? FIXME handle this
+	if err := g.gc.pusherClient.WriteOffsets(kvs, g.id, g.groupEpoch); err != nil {
+		if common.IsUnavailableError(err) {
+			log.Warnf("failed to write offsets to table pusher: %v", err)
+			fillAllErrorCodesForOffsetCommit(resp, kafkaprotocol.ErrorCodeLeaderNotAvailable)
+			return
+		} else {
+			log.Errorf("failed to write offsets to table pusher: %v", err)
+			fillAllErrorCodesForOffsetCommit(resp, kafkaprotocol.ErrorCodeUnknownServerError)
+			return
+		}
 	}
 }
 
-func (g *group) createOffsetKey(topicID int, partitionID int) []byte {
+func createOffsetKey(partHash []byte, topicID int, partitionID int) []byte {
 	var key []byte
-	key = append(key, g.partHash...)
+	key = append(key, partHash...)
 	key = binary.BigEndian.AppendUint64(key, uint64(topicID))
 	key = binary.BigEndian.AppendUint64(key, uint64(partitionID))
 	return key
 }
 
 func (g *group) loadOffset(topicID int, partitionID int) (int64, error) {
-	key := g.createOffsetKey(topicID, partitionID)
+	key := createOffsetKey(g.partHash, topicID, partitionID)
 	cl, err := g.gc.clientCache.GetClient()
 	if err != nil {
 		return 0, err
@@ -815,7 +821,6 @@ func (g *group) offsetFetch(req *kafkaprotocol.OffsetFetchRequest, resp *kafkapr
 	g.lock.Lock()
 	defer g.lock.Unlock()
 	for i, topicData := range req.Topics {
-		resp.Topics[i].Name = topicData.Name
 		foundTopic := false
 		topicInfo, err := g.gc.topicProvider.GetTopicInfo(*topicData.Name)
 		if err != nil {
@@ -824,7 +829,6 @@ func (g *group) offsetFetch(req *kafkaprotocol.OffsetFetchRequest, resp *kafkapr
 			foundTopic = true
 		}
 		for j, partitionID := range topicData.PartitionIndexes {
-			resp.Topics[i].Partitions[j].PartitionIndex = partitionID
 			if !foundTopic {
 				resp.Topics[i].Partitions[j].ErrorCode = kafkaprotocol.ErrorCodeUnknownTopicOrPartition
 				continue

@@ -1,6 +1,8 @@
 package group
 
 import (
+	"bytes"
+	"encoding/binary"
 	"fmt"
 	"github.com/google/uuid"
 	"github.com/spirit-labs/tektite/common"
@@ -11,6 +13,7 @@ import (
 	"github.com/spirit-labs/tektite/sst"
 	"github.com/spirit-labs/tektite/topicmeta"
 	"github.com/stretchr/testify/require"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -89,7 +92,7 @@ func TestInitialMemberJoinAfterDelay(t *testing.T) {
 
 func TestJoinMultipleMembersBeforeInitialDelay(t *testing.T) {
 	initialJoinDelay := 250 * time.Millisecond
-	gc, _ := createCoordinatorWithCfgSetter(t, func(cfg *Conf) {
+	gc, _, _, _, _ := createCoordinatorWithCfgSetter(t, func(cfg *Conf) {
 		cfg.InitialJoinDelay = initialJoinDelay
 	})
 	defer stopCoordinator(t, gc)
@@ -145,7 +148,7 @@ func TestExtendInitialJoinDelayToRebalanceTimeout(t *testing.T) {
 
 	initialJoinDelay := 100 * time.Millisecond
 	rebalanceTimeout := 500 * time.Millisecond
-	gc, _ := createCoordinatorWithCfgSetter(t, func(cfg *Conf) {
+	gc, _, _, _, _ := createCoordinatorWithCfgSetter(t, func(cfg *Conf) {
 		cfg.InitialJoinDelay = initialJoinDelay
 	})
 	defer stopCoordinator(t, gc)
@@ -264,7 +267,7 @@ func TestJoinUnsupportedProtocol(t *testing.T) {
 }
 
 func TestJoinNotController(t *testing.T) {
-	gc, controlClient := createCoordinatorWithCfgSetter(t, nil)
+	gc, controlClient, _, _, _ := createCoordinatorWithCfgSetter(t, nil)
 	defer stopCoordinator(t, gc)
 
 	controlClient.groupCoordinatorAddress = "foo"
@@ -1449,7 +1452,7 @@ func TestJoinTimeoutMembersRemovedIncludingLeaderAndJoinCompletes(t *testing.T) 
 func TestJoinTimeoutNoMembersRejoinTransitionsToEmpty(t *testing.T) {
 	newMemberJoinTimeout := 500 * time.Millisecond
 
-	gc, _ := createCoordinatorWithCfgSetter(t, func(cfg *Conf) {
+	gc, _, _, _, _ := createCoordinatorWithCfgSetter(t, func(cfg *Conf) {
 		cfg.InitialJoinDelay = 100 * time.Millisecond
 		cfg.MinSessionTimeout = 1 * time.Millisecond
 		cfg.NewMemberJoinTimeout = newMemberJoinTimeout
@@ -1524,7 +1527,7 @@ func addMemberWithSessionTimeout(gc *Coordinator, groupID string, sessionTimeout
 }
 
 func TestSessionTimeoutWhenActive(t *testing.T) {
-	gc, _ := createCoordinatorWithCfgSetter(t, func(config *Conf) {
+	gc, _, _, _, _ := createCoordinatorWithCfgSetter(t, func(config *Conf) {
 		config.InitialJoinDelay = 100 * time.Millisecond
 		config.MinSessionTimeout = 1 * time.Millisecond
 	})
@@ -1580,6 +1583,242 @@ func TestSessionTimeoutWhenActive(t *testing.T) {
 	require.Equal(t, stateEmpty, gc.getState(groupID))
 }
 
+func TestOffsetCommit(t *testing.T) {
+	gc, controlClient, pusher, topicProvider, _ := createCoordinatorWithCfgSetter(t, nil)
+	defer stopCoordinator(t, gc)
+
+	topicName1 := "test-topic1"
+	topicName2 := "test-topic2"
+	topicProvider.infos[topicName1] = topicmeta.TopicInfo{
+		ID:             1234,
+		Name:           topicName1,
+		PartitionCount: 100,
+	}
+	topicProvider.infos[topicName2] = topicmeta.TopicInfo{
+		ID:             2234,
+		Name:           topicName2,
+		PartitionCount: 100,
+	}
+	controlClient.groupEpoch = 23
+
+	groupID := uuid.New().String()
+	numMembers := 10
+	rebalanceTimeout := 1 * time.Second
+	members, _ := setupJoinedGroupWithArgs(t, numMembers, groupID, gc, rebalanceTimeout)
+	syncGroup(groupID, numMembers, members, gc)
+	require.Equal(t, stateActive, gc.getState(groupID))
+
+	var memberID string
+	members.Range(func(key, value any) bool {
+		memberID = key.(string)
+		return false
+	})
+
+	req := kafkaprotocol.OffsetCommitRequest{
+		GroupId:                   common.StrPtr(groupID),
+		MemberId:                  common.StrPtr(memberID),
+		GenerationIdOrMemberEpoch: int32(1),
+		Topics: []kafkaprotocol.OffsetCommitRequestOffsetCommitRequestTopic{
+			{
+				Name: common.StrPtr(topicName1),
+				Partitions: []kafkaprotocol.OffsetCommitRequestOffsetCommitRequestPartition{
+					{
+						PartitionIndex:  1,
+						CommittedOffset: 12345,
+					},
+					{
+						PartitionIndex:  23,
+						CommittedOffset: 456456,
+					},
+				},
+			},
+			{
+				Name: common.StrPtr(topicName2),
+				Partitions: []kafkaprotocol.OffsetCommitRequestOffsetCommitRequestPartition{
+					{
+						PartitionIndex:  7,
+						CommittedOffset: 345345,
+					},
+				},
+			},
+		},
+	}
+	resp := gc.OffsetCommit(&req)
+	require.Equal(t, 2, len(resp.Topics))
+	require.Equal(t, topicName1, *resp.Topics[0].Name)
+
+	require.Equal(t, 2, len(resp.Topics[0].Partitions))
+
+	require.Equal(t, 1, int(resp.Topics[0].Partitions[0].PartitionIndex))
+	require.Equal(t, kafkaprotocol.ErrorCodeNone, int(resp.Topics[0].Partitions[0].ErrorCode))
+	require.Equal(t, 23, int(resp.Topics[0].Partitions[1].PartitionIndex))
+	require.Equal(t, kafkaprotocol.ErrorCodeNone, int(resp.Topics[0].Partitions[1].ErrorCode))
+
+	require.Equal(t, 1, len(resp.Topics[1].Partitions))
+
+	require.Equal(t, 7, int(resp.Topics[1].Partitions[0].PartitionIndex))
+	require.Equal(t, kafkaprotocol.ErrorCodeNone, int(resp.Topics[0].Partitions[0].ErrorCode))
+
+	writtenKVs, writtenGroupID, writtenEpoch := pusher.getWrittenValues()
+	require.Equal(t, 3, len(writtenKVs))
+	require.Equal(t, groupID, writtenGroupID)
+	require.Equal(t, 23, int(writtenEpoch))
+}
+
+func TestOffsetFetch(t *testing.T) {
+	gc, controlClient, _, topicProvider, tableGetter := createCoordinatorWithCfgSetter(t, nil)
+	defer stopCoordinator(t, gc)
+
+	topicName1 := "test-topic1"
+	topicName2 := "test-topic2"
+	topicProvider.infos[topicName1] = topicmeta.TopicInfo{
+		ID:             1234,
+		Name:           topicName1,
+		PartitionCount: 100,
+	}
+	topicProvider.infos[topicName2] = topicmeta.TopicInfo{
+		ID:             2234,
+		Name:           topicName2,
+		PartitionCount: 100,
+	}
+	controlClient.groupEpoch = 23
+
+	groupID := uuid.New().String()
+	numMembers := 10
+	rebalanceTimeout := 1 * time.Second
+	members, _ := setupJoinedGroupWithArgs(t, numMembers, groupID, gc, rebalanceTimeout)
+	syncGroup(groupID, numMembers, members, gc)
+	require.Equal(t, stateActive, gc.getState(groupID))
+
+	g, ok := gc.getGroup(groupID)
+	require.True(t, ok)
+
+	infos := []createOffsetsInfo{
+		{
+			topicID: 1234,
+			partInfos: []createOffsetsPartitionInfo{
+				{
+					1, 123213,
+				},
+				{
+					23, 2344,
+				},
+			},
+		},
+		{
+			topicID: 2234,
+			partInfos: []createOffsetsPartitionInfo{
+				{
+					7, 3455,
+				},
+				{
+					11, 233,
+				},
+				{
+					77, 456,
+				},
+			},
+		},
+	}
+	table := createOffsetsBatch(t, infos, g.partHash)
+	tableGetter.table = table
+	tableID := sst.CreateSSTableId()
+
+	controlClient.queryRes = []lsm.NonOverlappingTables{
+		[]lsm.QueryTableInfo{
+			{
+				ID: []byte(tableID),
+			},
+		},
+	}
+
+	req := kafkaprotocol.OffsetFetchRequest{
+		GroupId: common.StrPtr(groupID),
+		Topics: []kafkaprotocol.OffsetFetchRequestOffsetFetchRequestTopic{
+			{
+				Name:             common.StrPtr(topicName1),
+				PartitionIndexes: []int32{1, 333, 23},
+			},
+			{
+				Name:             common.StrPtr(topicName2),
+				PartitionIndexes: []int32{7, 11, 77, 777},
+			},
+		},
+	}
+	resp := gc.OffsetFetch(&req)
+	require.Equal(t, 2, len(resp.Topics))
+	require.Equal(t, topicName1, *resp.Topics[0].Name)
+
+	require.Equal(t, 3, len(resp.Topics[0].Partitions))
+
+	require.Equal(t, 1, int(resp.Topics[0].Partitions[0].PartitionIndex))
+	require.Equal(t, kafkaprotocol.ErrorCodeNone, int(resp.Topics[0].Partitions[0].ErrorCode))
+	require.Equal(t, 123213, int(resp.Topics[0].Partitions[0].CommittedOffset))
+
+	require.Equal(t, 333, int(resp.Topics[0].Partitions[1].PartitionIndex))
+	require.Equal(t, kafkaprotocol.ErrorCodeNone, int(resp.Topics[0].Partitions[1].ErrorCode))
+	require.Equal(t, -1, int(resp.Topics[0].Partitions[0].CommittedOffset))
+
+	require.Equal(t, 23, int(resp.Topics[0].Partitions[2].PartitionIndex))
+	require.Equal(t, kafkaprotocol.ErrorCodeNone, int(resp.Topics[0].Partitions[2].ErrorCode))
+	require.Equal(t, 2344, int(resp.Topics[0].Partitions[0].CommittedOffset))
+
+	require.Equal(t, 4, len(resp.Topics[1].Partitions))
+
+	require.Equal(t, 7, int(resp.Topics[1].Partitions[0].PartitionIndex))
+	require.Equal(t, kafkaprotocol.ErrorCodeNone, int(resp.Topics[1].Partitions[0].ErrorCode))
+	require.Equal(t, 3455, int(resp.Topics[1].Partitions[0].CommittedOffset))
+
+	require.Equal(t, 11, int(resp.Topics[1].Partitions[1].PartitionIndex))
+	require.Equal(t, kafkaprotocol.ErrorCodeNone, int(resp.Topics[1].Partitions[1].ErrorCode))
+	require.Equal(t, 233, int(resp.Topics[1].Partitions[1].CommittedOffset))
+
+	require.Equal(t, 77, int(resp.Topics[1].Partitions[2].PartitionIndex))
+	require.Equal(t, kafkaprotocol.ErrorCodeNone, int(resp.Topics[1].Partitions[2].ErrorCode))
+	require.Equal(t, 456, int(resp.Topics[1].Partitions[2].CommittedOffset))
+
+	require.Equal(t, 777, int(resp.Topics[1].Partitions[3].PartitionIndex))
+	require.Equal(t, kafkaprotocol.ErrorCodeNone, int(resp.Topics[1].Partitions[3].ErrorCode))
+	require.Equal(t, -1, int(resp.Topics[1].Partitions[3].CommittedOffset))
+}
+
+type createOffsetsInfo struct {
+	topicID   int
+	partInfos []createOffsetsPartitionInfo
+}
+
+type createOffsetsPartitionInfo struct {
+	partitionID     int
+	committedOffset int
+}
+
+func createOffsetsBatch(t *testing.T, infos []createOffsetsInfo, partHash []byte) *sst.SSTable {
+	var kvs []common.KV
+	for _, topicData := range infos {
+		for _, partitionData := range topicData.partInfos {
+			offset := partitionData.committedOffset
+			// key is [partition_hash, topic_id, partition_id] value is [offset]
+			key := createOffsetKey(partHash, topicData.topicID, partitionData.partitionID)
+			value := make([]byte, 8)
+			binary.BigEndian.PutUint64(value, uint64(offset))
+			kvs = append(kvs, common.KV{
+				Key:   key,
+				Value: value,
+			})
+		}
+	}
+	if len(kvs) > 1 {
+		// sort them
+		sort.Slice(kvs, func(i, j int) bool {
+			return bytes.Compare(kvs[i].Key, kvs[j].Key) < 0
+		})
+	}
+	iter := common.NewKvSliceIterator(kvs)
+	table, _, _, _, _, err := sst.BuildSSTable(common.DataFormatV1, 0, 0, iter)
+	require.NoError(t, err)
+	return table
+}
+
 func callJoinGroupSync(gc *Coordinator, groupID string, clientID string, memberID string, protocolType string, protocols []ProtocolInfo, sessionTimeout time.Duration,
 	rebalanceTimeout time.Duration) JoinResult {
 	return callJoinGroupSyncWithApiVersion(gc, groupID, clientID, memberID, protocolType, protocols, sessionTimeout, rebalanceTimeout,
@@ -1602,13 +1841,14 @@ func stopCoordinator(t *testing.T, gc *Coordinator) {
 }
 
 func createCoordinator(t *testing.T) *Coordinator {
-	gc, _ := createCoordinatorWithCfgSetter(t, func(cfg *Conf) {
+	gc, _, _, _, _ := createCoordinatorWithCfgSetter(t, func(cfg *Conf) {
 		cfg.InitialJoinDelay = defaultInitialJoinDelay
 	})
 	return gc
 }
 
-func createCoordinatorWithCfgSetter(t *testing.T, cfgSetter func(cfg *Conf)) (*Coordinator, *testControlClient) {
+func createCoordinatorWithCfgSetter(t *testing.T, cfgSetter func(cfg *Conf)) (*Coordinator, *testControlClient,
+	*testPusherClient, *testTopicInfoProvider, *testTableGetter) {
 	topicProvider := &testTopicInfoProvider{
 		infos: map[string]topicmeta.TopicInfo{},
 	}
@@ -1629,7 +1869,7 @@ func createCoordinatorWithCfgSetter(t *testing.T, cfgSetter func(cfg *Conf)) (*C
 	require.NoError(t, err)
 	err = gc.Start()
 	require.NoError(t, err)
-	return gc, controlClient
+	return gc, controlClient, pusherClient, topicProvider, tableGetter
 }
 
 type testTopicInfoProvider struct {
@@ -1648,6 +1888,7 @@ func (t *testTopicInfoProvider) GetTopicInfo(topicName string) (topicmeta.TopicI
 type testControlClient struct {
 	groupCoordinatorAddress string
 	groupEpoch              int32
+	queryRes                lsm.OverlappingTables
 }
 
 func (t *testControlClient) GetOffsets(infos []offsets.GetOffsetTopicInfo) ([]offsets.OffsetTopicInfo, int64, error) {
@@ -1663,7 +1904,7 @@ func (t *testControlClient) RegisterL0Table(sequence int64, regEntry lsm.Registr
 }
 
 func (t *testControlClient) QueryTablesInRange(keyStart []byte, keyEnd []byte) (lsm.OverlappingTables, error) {
-	panic("should not be called")
+	return t.queryRes, nil
 }
 
 func (t *testControlClient) RegisterTableListener(topicID int, partitionID int, memberID string, resetSequence int64) (int64, error) {
@@ -1695,20 +1936,33 @@ func (t *testControlClient) Close() error {
 }
 
 type testPusherClient struct {
-	lock       sync.Mutex
-	writtenKVs []common.KV
+	lock              sync.Mutex
+	writtenKVs        []common.KV
+	writtenGroupID    string
+	writtenGroupEpoch int32
 }
 
 func (t *testPusherClient) WriteOffsets(kvs []common.KV, groupID string, groupEpoch int32) error {
 	t.lock.Lock()
 	defer t.lock.Unlock()
-	t.writtenKVs = append(t.writtenKVs, kvs...)
+	t.writtenKVs = kvs
+	t.writtenGroupID = groupID
+	t.writtenGroupEpoch = groupEpoch
 	return nil
 }
 
+func (t *testPusherClient) getWrittenValues() ([]common.KV, string, int32) {
+	t.lock.Lock()
+	defer t.lock.Unlock()
+	copied := make([]common.KV, len(t.writtenKVs))
+	copy(copied, t.writtenKVs)
+	return copied, t.writtenGroupID, t.writtenGroupEpoch
+}
+
 type testTableGetter struct {
+	table *sst.SSTable
 }
 
 func (t *testTableGetter) getTable(tableID sst.SSTableID) (*sst.SSTable, error) {
-	return nil, nil
+	return t.table, nil
 }

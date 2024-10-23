@@ -164,7 +164,11 @@ func (gc *Coordinator) OffsetCommit(req *kafkaprotocol.OffsetCommitRequest) *kaf
 	var resp kafkaprotocol.OffsetCommitResponse
 	resp.Topics = make([]kafkaprotocol.OffsetCommitResponseOffsetCommitResponseTopic, len(req.Topics))
 	for i, topicData := range req.Topics {
+		resp.Topics[i].Name = req.Topics[i].Name
 		resp.Topics[i].Partitions = make([]kafkaprotocol.OffsetCommitResponseOffsetCommitResponsePartition, len(topicData.Partitions))
+		for j, partData := range topicData.Partitions {
+			resp.Topics[i].Partitions[j].PartitionIndex = partData.PartitionIndex
+		}
 	}
 	groupID := *req.GroupId
 	g, ok := gc.getGroup(groupID)
@@ -180,7 +184,11 @@ func (gc *Coordinator) OffsetFetch(req *kafkaprotocol.OffsetFetchRequest) *kafka
 	var resp kafkaprotocol.OffsetFetchResponse
 	resp.Topics = make([]kafkaprotocol.OffsetFetchResponseOffsetFetchResponseTopic, len(req.Topics))
 	for i, topicData := range req.Topics {
+		resp.Topics[i].Name = req.Topics[i].Name
 		resp.Topics[i].Partitions = make([]kafkaprotocol.OffsetFetchResponseOffsetFetchResponsePartition, len(topicData.PartitionIndexes))
+		for j, index := range topicData.PartitionIndexes {
+			resp.Topics[i].Partitions[j].PartitionIndex = index
+		}
 	}
 	groupID := *req.GroupId
 	g, ok := gc.getGroup(groupID)
