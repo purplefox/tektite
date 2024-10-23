@@ -8,6 +8,7 @@ import (
 	"github.com/spirit-labs/tektite/common"
 	"github.com/spirit-labs/tektite/control"
 	"github.com/spirit-labs/tektite/kafkaprotocol"
+	log "github.com/spirit-labs/tektite/logger"
 	"github.com/spirit-labs/tektite/lsm"
 	"github.com/spirit-labs/tektite/offsets"
 	"github.com/spirit-labs/tektite/sst"
@@ -1644,6 +1645,32 @@ func TestOffsetCommit(t *testing.T) {
 		},
 	}
 	resp := gc.OffsetCommit(&req)
+
+	infos := []createOffsetsInfo{
+		{
+			topicID: 1234,
+			partInfos: []createOffsetsPartitionInfo{
+				{
+					1, 12345,
+				},
+				{
+					23, 456456,
+				},
+			},
+		},
+		{
+			topicID: 2234,
+			partInfos: []createOffsetsPartitionInfo{
+				{
+					7, 345345,
+				},
+			},
+		},
+	}
+	g, ok := gc.getGroup(groupID)
+	require.True(t, ok)
+	kvs := createOffsetsKvs(t, infos, g.partHash)
+
 	require.Equal(t, 2, len(resp.Topics))
 	require.Equal(t, topicName1, *resp.Topics[0].Name)
 
@@ -1663,6 +1690,7 @@ func TestOffsetCommit(t *testing.T) {
 	require.Equal(t, 3, len(writtenKVs))
 	require.Equal(t, groupID, writtenGroupID)
 	require.Equal(t, 23, int(writtenEpoch))
+	require.Equal(t, kvs, writtenKVs)
 }
 
 func TestOffsetFetch(t *testing.T) {
@@ -1756,12 +1784,12 @@ func TestOffsetFetch(t *testing.T) {
 	require.Equal(t, 123213, int(resp.Topics[0].Partitions[0].CommittedOffset))
 
 	require.Equal(t, 333, int(resp.Topics[0].Partitions[1].PartitionIndex))
-	require.Equal(t, kafkaprotocol.ErrorCodeNone, int(resp.Topics[0].Partitions[1].ErrorCode))
-	require.Equal(t, -1, int(resp.Topics[0].Partitions[0].CommittedOffset))
+	require.Equal(t, kafkaprotocol.ErrorCodeNone, int(resp.Topics[1].Partitions[1].ErrorCode))
+	require.Equal(t, -1, int(resp.Topics[0].Partitions[1].CommittedOffset))
 
 	require.Equal(t, 23, int(resp.Topics[0].Partitions[2].PartitionIndex))
 	require.Equal(t, kafkaprotocol.ErrorCodeNone, int(resp.Topics[0].Partitions[2].ErrorCode))
-	require.Equal(t, 2344, int(resp.Topics[0].Partitions[0].CommittedOffset))
+	require.Equal(t, 2344, int(resp.Topics[0].Partitions[2].CommittedOffset))
 
 	require.Equal(t, 4, len(resp.Topics[1].Partitions))
 
@@ -1792,7 +1820,7 @@ type createOffsetsPartitionInfo struct {
 	committedOffset int
 }
 
-func createOffsetsBatch(t *testing.T, infos []createOffsetsInfo, partHash []byte) *sst.SSTable {
+func createOffsetsKvs(t *testing.T, infos []createOffsetsInfo, partHash []byte) []common.KV {
 	var kvs []common.KV
 	for _, topicData := range infos {
 		for _, partitionData := range topicData.partInfos {
@@ -1801,6 +1829,7 @@ func createOffsetsBatch(t *testing.T, infos []createOffsetsInfo, partHash []byte
 			key := createOffsetKey(partHash, topicData.topicID, partitionData.partitionID)
 			value := make([]byte, 8)
 			binary.BigEndian.PutUint64(value, uint64(offset))
+			log.Infof("creating key %v", key)
 			kvs = append(kvs, common.KV{
 				Key:   key,
 				Value: value,
@@ -1813,6 +1842,11 @@ func createOffsetsBatch(t *testing.T, infos []createOffsetsInfo, partHash []byte
 			return bytes.Compare(kvs[i].Key, kvs[j].Key) < 0
 		})
 	}
+	return kvs
+}
+
+func createOffsetsBatch(t *testing.T, infos []createOffsetsInfo, partHash []byte) *sst.SSTable {
+	kvs := createOffsetsKvs(t, infos, partHash)
 	iter := common.NewKvSliceIterator(kvs)
 	table, _, _, _, _, err := sst.BuildSSTable(common.DataFormatV1, 0, 0, iter)
 	require.NoError(t, err)

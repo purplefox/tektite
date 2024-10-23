@@ -781,9 +781,10 @@ func (g *group) loadOffset(topicID int, partitionID int) (int64, error) {
 		return 0, err
 	}
 	keyEnd := common.IncBigEndianBytes(key)
+	log.Infof("query tables in range %v to %v", key, keyEnd)
 	queryRes, err := cl.QueryTablesInRange(key, keyEnd)
 	if err != nil {
-		// retries????
+		// FIXME retries????
 		return 0, err
 	}
 	if len(queryRes) == 0 {
@@ -799,6 +800,7 @@ func (g *group) loadOffset(topicID int, partitionID int) (int64, error) {
 			if err != nil {
 				return 0, err
 			}
+			log.Info("got table")
 			iter, err := sstTable.NewIterator(key, keyEnd)
 			if err != nil {
 				return 0, err
@@ -808,9 +810,11 @@ func (g *group) loadOffset(topicID int, partitionID int) (int64, error) {
 				return 0, err
 			}
 			if !ok {
-				return 0, errors.New("cannot find offset")
+				log.Info("not found")
+				return -1, nil
 			}
 			offset := int64(binary.BigEndian.Uint64(kv.Value))
+			log.Infof("found offset: %d", offset)
 			return offset, nil
 		}
 	}
