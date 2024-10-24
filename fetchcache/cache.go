@@ -36,7 +36,7 @@ type Cache struct {
 	transportServer transport.Server
 	cache           *ristretto.Cache
 	consist         *consistent.HashRing
-	xconnCaches      map[string]*transport.ConnectionCache
+	connCaches      map[string]*transport.ConnectionCache
 	members         map[string]struct{}
 	cfg             Conf
 	stats           CacheStats
@@ -93,6 +93,10 @@ func NewConf() Conf {
 		DataBucketName:           DefaultDataBucketName,
 		MaxSizeBytes:             DefaultMaxSizeBytes,
 	}
+}
+
+func (c *Conf) Validate() error {
+	return nil
 }
 
 const (

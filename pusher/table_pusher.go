@@ -268,14 +268,14 @@ func (t *TablePusher) HandleProduceRequest(req *kafkaprotocol.ProduceRequest,
 }
 
 func (t *TablePusher) HandleOffsetCommit(_ *transport.ConnectionContext, request []byte, responseBuff []byte, responseWriter transport.ResponseWriter) error {
-	// FIXME, TODO check RPC versions?
-
+	if err := checkRPCVersion(request); err != nil {
+		return err
+	}
 	var req OffsetCommitRequest
 	req.Deserialize(request, 0)
-
 	return t.handleOffsetCommit0(req.Request, req.GroupEpoch, func(resp *kafkaprotocol.OffsetCommitResponse) {
 		responseBuff = resp.Write(req.ResponseVersion, responseBuff, nil)
-		if err :=  responseWriter(responseBuff, nil); err != nil {
+		if err := responseWriter(responseBuff, nil); err != nil {
 			log.Errorf("failed to write offset commit: %v", err)
 		}
 	})
@@ -283,22 +283,29 @@ func (t *TablePusher) HandleOffsetCommit(_ *transport.ConnectionContext, request
 
 func (t *TablePusher) handleOffsetCommit0(req *kafkaprotocol.OffsetCommitRequest, groupEpoch int,
 	completionFunc func(resp *kafkaprotocol.OffsetCommitResponse)) error {
-
 	var resp kafkaprotocol.OffsetCommitResponse
-	// FIXME - prepare the response
-
+	resp.Topics = make([]kafkaprotocol.OffsetCommitResponseOffsetCommitResponseTopic, len(req.Topics))
+	for i, topicData := range req.Topics {
+		resp.Topics[i].Name = req.Topics[i].Name
+		resp.Topics[i].Partitions = make([]kafkaprotocol.OffsetCommitResponseOffsetCommitResponsePartition, len(topicData.Partitions))
+		for j, partData := range topicData.Partitions {
+			resp.Topics[i].Partitions[j].PartitionIndex = partData.PartitionIndex
+		}
+	}
 	groupID := *req.GroupId
 	lastEpoch, ok := t.groupEpochInfos[groupID]
-	if ok && groupEpoch < lastEpoch {
-		// FIXME - fill in response for invalid epoch
+	if ok && groupEpoch != lastEpoch {
+		log.Warnf("rejecting offset commit from group %s as epoch is invalid", groupID)
+		fillInErrorCodesForOffsetCommitResponse(&resp, kafkaprotocol.ErrorCodeCoordinatorNotAvailable)
+		completionFunc(&resp)
+		return nil
 	}
-	if !ok || groupEpoch > lastEpoch {
+	if !ok {
 		t.groupEpochInfos[groupID] = groupEpoch
 	}
-
 	partHash, err := parthash.CreateHash([]byte(groupID))
 	if err != nil {
-		return err
+		panic(err) // won't happen
 	}
 	// Convert to KV pairs
 	var kvs []common.KV
@@ -331,15 +338,40 @@ func (t *TablePusher) handleOffsetCommit0(req *kafkaprotocol.OffsetCommitRequest
 	}
 	t.offsetKVs[groupID] = append(t.offsetKVs[groupID], kvs...)
 	t.offsetCompletions[groupID] = append(t.offsetCompletions[groupID], func(err error) {
-		// FIXME! TODO deal with error!!
+		if err != nil {
+			if common.IsUnavailableError(err) {
+				log.Warnf("failed to handle offset commit: %v", err)
+				fillInErrorCodesForOffsetCommitResponse(&resp, kafkaprotocol.ErrorCodeCoordinatorNotAvailable)
+			} else {
+				log.Errorf("failed to handle offset commit: %v", err)
+				fillInErrorCodesForOffsetCommitResponse(&resp, kafkaprotocol.ErrorCodeUnknownServerError)
+			}
+		}
 		completionFunc(&resp)
 	})
 	return nil
 }
 
+func checkRPCVersion(request []byte) error {
+	rpcVersion := binary.BigEndian.Uint16(request)
+	if rpcVersion != 1 {
+		// Currently just 1
+		return errors.New("invalid rpc version")
+	}
+	return nil
+}
+
+func fillInErrorCodesForOffsetCommitResponse(resp *kafkaprotocol.OffsetCommitResponse, errorCode int) {
+	for i, topicData := range resp.Topics {
+		for j := range topicData.Partitions {
+			resp.Topics[i].Partitions[j].ErrorCode = int16(errorCode)
+		}
+	}
+}
+
 func (t *TablePusher) failOffsetCommits(groupID string) {
 	log.Warnf("attempt to commit offsets for invalid group epoch for consumer group %s - will be ignored", groupID)
-	compls, ok := t.offsetCompletions[groupID]
+	completions, ok := t.offsetCompletions[groupID]
 	if !ok {
 		panic("not found offset completions")
 	}
@@ -347,10 +379,10 @@ func (t *TablePusher) failOffsetCommits(groupID string) {
 	if !ok {
 		panic("not found offset kvs")
 	}
-	// FIXME TODO set errors
-	for _, compl := range compls {
-		// FIXME
-		compl(nil)
+	for _, completion := range completions {
+		err := common.NewTektiteErrorf(common.Unavailable, "unable to commit offsets for group %s as epoch is invalid",
+			groupID)
+		completion(err)
 	}
 	delete(t.offsetKVs, groupID)
 	delete(t.offsetCompletions, groupID)
@@ -402,6 +434,7 @@ func extractBatches(buff []byte) [][]byte {
 func (t *TablePusher) handleUnexpectedError(err error) {
 	// unexpected error - call all completions with error, and stop
 	t.callCompletions(err)
+	t.reset()
 	t.started = false
 	t.stopping.Store(true)
 }
@@ -480,7 +513,7 @@ func (t *TablePusher) write() error {
 			GroupEpoch: epoch,
 		})
 	}
-	// Now send the prePush call - this gets any offsets for topic data to be written and also provides epochs for
+	// Now make the prePush call - this gets any offsets for topic data to be written and also provides epochs for
 	// the consumer groups of any offsets being committed - this allows them to be verified by the controller
 	// to prevent any zombie writes of offsets
 	offs, seq, epochsOK, err := client.PrePush(getOffSetInfos, groupEpochInfos)
@@ -493,7 +526,6 @@ func (t *TablePusher) write() error {
 	if len(epochsOK) != len(t.groupEpochInfos) {
 		panic("invalid epochs ok returned")
 	}
-
 	for i, ok := range epochsOK {
 		if !ok {
 			// If invalid epochs for any committed offsets are returned we fail the offset commits for that groupID
@@ -502,15 +534,12 @@ func (t *TablePusher) write() error {
 			t.failOffsetCommits(groupID)
 		}
 	}
-
 	// Create KVs for the batches
 	kvs := make([]common.KV, 0, len(offs)+t.numOffsetsToCommit)
-
 	// Add any offsets to commit
 	for _, offsetKVs := range t.offsetKVs {
 		kvs = append(kvs, offsetKVs...)
 	}
-
 	for i, topOffset := range offs {
 		partitionRecs := t.partitionRecords[topOffset.TopicID]
 		for j, partInfo := range topOffset.PartitionInfos {
@@ -592,7 +621,12 @@ func (t *TablePusher) write() error {
 	}
 	// Send back completions
 	t.callCompletions(nil)
-	// reset
+	// reset - the state
+	t.reset()
+	return nil
+}
+
+func (t *TablePusher) reset() {
 	t.partitionRecords = make(map[int]map[int][]bufferedEntry)
 	if t.numOffsetsToCommit > 0 {
 		t.offsetKVs = map[string][]common.KV{}
@@ -601,14 +635,13 @@ func (t *TablePusher) write() error {
 		t.numOffsetsToCommit = 0
 	}
 	t.sizeBytes = 0
-	return nil
 }
 
 type OffsetCommitRequest struct {
-	GroupEpoch     int
-	RequestVersion int16
+	GroupEpoch      int
+	RequestVersion  int16
 	ResponseVersion int16
-	Request        *kafkaprotocol.OffsetCommitRequest
+	Request         *kafkaprotocol.OffsetCommitRequest
 }
 
 func (o *OffsetCommitRequest) Serialize(buff []byte) []byte {

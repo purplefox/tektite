@@ -86,12 +86,12 @@ type clientWrapper struct {
 	client Client
 }
 
-func (c *clientWrapper) GetOffsets(infos []offsets.GetOffsetTopicInfo) ([]offsets.OffsetTopicInfo, int64, error) {
-	offs, seq, err := c.client.PrePush(infos)
+func (c *clientWrapper) PrePush(infos []offsets.GetOffsetTopicInfo, epochInfos []GroupEpochInfo) ([]offsets.OffsetTopicInfo, int64, []bool, error) {
+	offs, seq, epochsOK, err := c.client.PrePush(infos, epochInfos)
 	if err != nil {
 		c.closeConnection()
 	}
-	return offs, seq, err
+	return offs, seq, epochsOK, err
 }
 
 func (c *clientWrapper) ApplyLsmChanges(regBatch lsm.RegistrationBatch) error {

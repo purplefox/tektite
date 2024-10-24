@@ -8,6 +8,7 @@ import (
 	"github.com/spirit-labs/tektite/control"
 	"github.com/spirit-labs/tektite/fetchcache"
 	"github.com/spirit-labs/tektite/fetcher"
+	"github.com/spirit-labs/tektite/group"
 	"github.com/spirit-labs/tektite/kafkaserver2"
 	"github.com/spirit-labs/tektite/lsm"
 	"github.com/spirit-labs/tektite/objstore"
@@ -33,6 +34,7 @@ type Agent struct {
 	compactionWorkersService *lsm.CompactionWorkerService
 	partitionHashes          *parthash.PartitionHashes
 	fetchCache               *fetchcache.Cache
+	groupCoordinator         *group.Coordinator
 	manifold                 *membershipChangedManifold
 }
 
@@ -113,6 +115,12 @@ func NewAgentWithFactories(cfg Conf, objStore objstore.Client, connectionFactory
 	}
 	transportServer.RegisterHandler(transport.HandlerIDFetcherTableRegisteredNotification, bf.HandleTableRegisteredNotification)
 	agent.batchFetcher = bf
+	coordinator, err := group.NewCoordinator(cfg.GroupCoordinatorConf, transportServer.Address(), topicMetaCache,
+		agent.controller.Client, connectionFactory, getter.get)
+	if err != nil {
+		return nil, err
+	}
+	agent.groupCoordinator = coordinator
 	agent.kafkaServer = kafkaserver2.NewKafkaServer(cfg.KafkaListenerConfig.Address,
 		cfg.KafkaListenerConfig.TLSConfig, cfg.KafkaListenerConfig.AuthenticationType, agent.newKafkaHandler)
 	agent.manifold = &membershipChangedManifold{listeners: []MembershipListener{agent.controller.MembershipChanged,
@@ -146,6 +154,9 @@ func (a *Agent) Start() error {
 	if err := a.batchFetcher.Start(); err != nil {
 		return err
 	}
+	if err := a.groupCoordinator.Start(); err != nil {
+		return err
+	}
 	if err := a.kafkaServer.Start(); err != nil {
 		return err
 	}
@@ -169,6 +180,9 @@ func (a *Agent) Stop() error {
 		return err
 	}
 	if err := a.kafkaServer.Stop(); err != nil {
+		return err
+	}
+	if err := a.groupCoordinator.Stop(); err != nil {
 		return err
 	}
 	if err := a.batchFetcher.Stop(); err != nil {

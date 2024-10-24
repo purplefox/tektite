@@ -20,15 +20,14 @@ type Coordinator struct {
 	topicProvider topicInfoProvider
 	clientCache   *control.ClientCache
 	// FIXME sort out locking on coordinator - maybe just have one RW lock for everything and make sure start and stop are implemented properly
-	connFactory transport.ConnectionFactory
+	connFactory    transport.ConnectionFactory
 	connCachesLock sync.RWMutex
-	connCaches      map[string]*transport.ConnectionCache
-	pusherClient  tablePusherClient
-	tableGetter   sst.TableGetter
-	groups        map[string]*group
-	groupsLock    sync.RWMutex
-	timers        sync.Map
-	membership cluster.MembershipState
+	connCaches     map[string]*transport.ConnectionCache
+	tableGetter    sst.TableGetter
+	groups         map[string]*group
+	groupsLock     sync.RWMutex
+	timers         sync.Map
+	membership     cluster.MembershipState
 }
 
 type topicInfoProvider interface {
@@ -40,43 +39,49 @@ type tablePusherClient interface {
 }
 
 type Conf struct {
-	MinSessionTimeout    time.Duration
-	MaxSessionTimeout    time.Duration
-	InitialJoinDelay     time.Duration
-	NewMemberJoinTimeout time.Duration
+	MinSessionTimeout              time.Duration
+	MaxSessionTimeout              time.Duration
+	InitialJoinDelay               time.Duration
+	NewMemberJoinTimeout           time.Duration
 	MaxPusherConnectionsPerAddress int
+	MaxControllerConnections       int
 }
 
 func NewConf() Conf {
 	return Conf{
-		MinSessionTimeout:    DefaultMinSessionTimeout,
-		MaxSessionTimeout:    DefaultMaxSessionTimeout,
-		InitialJoinDelay:     DefaultInitialJoinDelay,
-		NewMemberJoinTimeout: DefaultNewMemberJoinTimeout,
+		MinSessionTimeout:              DefaultMinSessionTimeout,
+		MaxSessionTimeout:              DefaultMaxSessionTimeout,
+		InitialJoinDelay:               DefaultInitialJoinDelay,
+		NewMemberJoinTimeout:           DefaultNewMemberJoinTimeout,
 		MaxPusherConnectionsPerAddress: DefaultMaxPusherConnectionsPerAddresss,
+		MaxControllerConnections:       DefaultMaxControllerConnections,
 	}
 }
 
+func (c *Conf) Validate() error {
+	return nil
+}
+
 const (
-	DefaultMinSessionTimeout    = 6 * time.Second
-	DefaultMaxSessionTimeout    = 30 * time.Minute
-	DefaultInitialJoinDelay     = 3 * time.Second
-	DefaultNewMemberJoinTimeout = 5 * time.Minute
+	DefaultMinSessionTimeout               = 6 * time.Second
+	DefaultMaxSessionTimeout               = 30 * time.Minute
+	DefaultInitialJoinDelay                = 3 * time.Second
+	DefaultNewMemberJoinTimeout            = 5 * time.Minute
 	DefaultMaxPusherConnectionsPerAddresss = 10
+	DefaultMaxControllerConnections        = 10
 )
 
-func NewCoordinator(cfg Conf, address string, topicProvider topicInfoProvider, controlClientCache *control.ClientCache,
-	connFactory transport.ConnectionFactory, pusherClient tablePusherClient, tableGetter sst.TableGetter) (*Coordinator, error) {
+func NewCoordinator(cfg Conf, address string, topicProvider topicInfoProvider, controlFactory control.ClientFactory,
+	connFactory transport.ConnectionFactory, tableGetter sst.TableGetter) (*Coordinator, error) {
 	return &Coordinator{
 		cfg:           cfg,
 		address:       address,
 		groups:        map[string]*group{},
 		topicProvider: topicProvider,
-		clientCache:   controlClientCache,
-		connFactory: connFactory,
-		pusherClient:  pusherClient,
+		clientCache:   control.NewClientCache(cfg.MaxPusherConnectionsPerAddress, controlFactory),
+		connFactory:   connFactory,
 		tableGetter:   tableGetter,
-		connCaches: map[string]*transport.ConnectionCache{},
+		connCaches:    map[string]*transport.ConnectionCache{},
 	}, nil
 }
 

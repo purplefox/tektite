@@ -735,23 +735,23 @@ func (g *group) offsetCommit(req *kafkaprotocol.OffsetCommitRequest, reqVersion 
 	if !ok {
 		// No available pushers
 		log.Warnf("cannot commit offsets no members in cluster")
-		return nil, kafkaprotocol.ErrorCodeLeaderNotAvailable
+		return nil, kafkaprotocol.ErrorCodeCoordinatorNotAvailable
 	}
 	conn, err := g.gc.getConnection(pusherAddress)
 	if err != nil {
 		log.Warnf("failed to get table pusher connection %v", err)
-		return nil, kafkaprotocol.ErrorCodeLeaderNotAvailable
+		return nil, kafkaprotocol.ErrorCodeCoordinatorNotAvailable
 	}
 	var commitReq pusher.OffsetCommitRequest
 	commitReq.RequestVersion = reqVersion
 	commitReq.ResponseVersion = respVersion
 	commitReq.Request = req
-	buff := commitReq.Serialize(nil)
+	buff := commitReq.Serialize(createRequestBuffer())
 	r, err := conn.SendRPC(transport.HandlerIDTablePusherOffsetCommit, buff)
 	if err != nil {
 		if common.IsUnavailableError(err) {
 			log.Warnf("failed to write offsets to table pusher: %v", err)
-			return nil, kafkaprotocol.ErrorCodeLeaderNotAvailable
+			return nil, kafkaprotocol.ErrorCodeCoordinatorNotAvailable
 		} else {
 			log.Errorf("failed to write offsets to table pusher: %v", err)
 			return nil, kafkaprotocol.ErrorCodeUnknownServerError
@@ -764,6 +764,12 @@ func (g *group) offsetCommit(req *kafkaprotocol.OffsetCommitRequest, reqVersion 
 		return nil, kafkaprotocol.ErrorCodeUnknownServerError
 	}
 	return &commitResp, kafkaprotocol.ErrorCodeNone
+}
+
+func createRequestBuffer() []byte {
+	buff := make([]byte, 0, 128)                  // Initial size guess
+	buff = binary.BigEndian.AppendUint16(buff, 1) // rpc version - currently 1
+	return buff
 }
 
 func (g *group) loadOffset(topicID int, partitionID int) (int64, error) {
