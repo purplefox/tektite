@@ -87,7 +87,7 @@ type clientWrapper struct {
 }
 
 func (c *clientWrapper) GetOffsets(infos []offsets.GetOffsetTopicInfo) ([]offsets.OffsetTopicInfo, int64, error) {
-	offs, seq, err := c.client.GetOffsets(infos)
+	offs, seq, err := c.client.PrePush(infos)
 	if err != nil {
 		c.closeConnection()
 	}

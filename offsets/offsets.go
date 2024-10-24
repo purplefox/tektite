@@ -51,9 +51,9 @@ type Cache struct {
 	lock                     sync.RWMutex
 	started                  bool
 	topicOffsets             map[int][]partitionOffsets
-	topicMetaProvider topicMetaProvider
-	querier           querier
-	partitionHashes   *parthash.PartitionHashes
+	topicMetaProvider        topicMetaProvider
+	querier                  querier
+	partitionHashes          *parthash.PartitionHashes
 	objStore                 objstore.Client
 	dataBucketName           string
 	stopping                 atomic.Bool
@@ -168,7 +168,7 @@ func (o *Cache) getOffsets0(infos []GetOffsetTopicInfo) ([]OffsetTopicInfo, int6
 	// sequence. We need this guarantee so that when we re-order registrations in sequence order we only output
 	// tables with offsets in ascending order.
 	// Note, that infos will always be provided in [topic id, partition id] order - this ensures deadlock is impossible
-	// with concurrent calls to GetOffsets for overlapping sets of partitions
+	// with concurrent calls to PrePush for overlapping sets of partitions
 	var partOffs []*partitionOffsets
 	defer func() {
 		for _, off := range partOffs {

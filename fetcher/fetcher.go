@@ -113,8 +113,6 @@ type topicInfoProvider interface {
 	GetTopicInfo(topicName string) (topicmeta.TopicInfo, error)
 }
 
-type controllerClientFactory func() (ControlClient, error)
-
 type ControlClient interface {
 	RegisterTableListener(topicID int, partitionID int, memberID string, resetSequence int64) (int64, error)
 	QueryTablesInRange(keyStart []byte, keyEnd []byte) (lsm.OverlappingTables, error)

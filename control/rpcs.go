@@ -128,7 +128,7 @@ func (g *RegisterTableListenerResponse) Deserialize(buff []byte, offset int) int
 	return offset
 }
 
-type GetOffsetsRequest struct {
+type PrePushRequest struct {
 	LeaderVersion   int
 	Infos           []offsets.GetOffsetTopicInfo
 	GroupEpochInfos []GroupEpochInfo
@@ -139,7 +139,7 @@ type GroupEpochInfo struct {
 	GroupEpoch int
 }
 
-func (g *GetOffsetsRequest) Serialize(buff []byte) []byte {
+func (g *PrePushRequest) Serialize(buff []byte) []byte {
 	buff = binary.BigEndian.AppendUint64(buff, uint64(g.LeaderVersion))
 	buff = binary.BigEndian.AppendUint32(buff, uint32(len(g.Infos)))
 	for _, topicInfo := range g.Infos {
@@ -159,7 +159,7 @@ func (g *GetOffsetsRequest) Serialize(buff []byte) []byte {
 	return buff
 }
 
-func (g *GetOffsetsRequest) Deserialize(buff []byte, offset int) int {
+func (g *PrePushRequest) Deserialize(buff []byte, offset int) int {
 	g.LeaderVersion = int(binary.BigEndian.Uint64(buff[offset:]))
 	offset += 8
 	lInfos := int(binary.BigEndian.Uint32(buff[offset:]))
@@ -195,13 +195,13 @@ func (g *GetOffsetsRequest) Deserialize(buff []byte, offset int) int {
 	return offset
 }
 
-type GetOffsetsResponse struct {
+type PrePushResponse struct {
 	Offsets  []offsets.OffsetTopicInfo
 	Sequence int64
 	EpochsOK []bool
 }
 
-func (g *GetOffsetsResponse) Serialize(buff []byte) []byte {
+func (g *PrePushResponse) Serialize(buff []byte) []byte {
 	buff = binary.BigEndian.AppendUint32(buff, uint32(len(g.Offsets)))
 	for _, offset := range g.Offsets {
 		buff = binary.BigEndian.AppendUint64(buff, uint64(offset.TopicID))
@@ -223,7 +223,7 @@ func (g *GetOffsetsResponse) Serialize(buff []byte) []byte {
 	return buff
 }
 
-func (g *GetOffsetsResponse) Deserialize(buff []byte, offset int) int {
+func (g *PrePushResponse) Deserialize(buff []byte, offset int) int {
 	numOffsets := int(binary.BigEndian.Uint32(buff[offset:]))
 	offset += 4
 	g.Offsets = make([]offsets.OffsetTopicInfo, numOffsets)

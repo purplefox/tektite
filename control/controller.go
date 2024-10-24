@@ -60,7 +60,7 @@ func (c *Controller) Start() error {
 	c.transportServer.RegisterHandler(transport.HandlerIDControllerApplyChanges, c.handleApplyChanges)
 	c.transportServer.RegisterHandler(transport.HandlerIDControllerRegisterTableListener, c.handleRegisterTableListener)
 	c.transportServer.RegisterHandler(transport.HandlerIDControllerQueryTablesInRange, c.handleQueryTablesInRange)
-	c.transportServer.RegisterHandler(transport.HandlerIDControllerGetOffsets, c.handleGetOffsets)
+	c.transportServer.RegisterHandler(transport.HandlerIDControllerGetOffsets, c.handlePrePush)
 	c.transportServer.RegisterHandler(transport.HandlerIDControllerPollForJob, c.handlePollForJob)
 	c.transportServer.RegisterHandler(transport.HandlerIDControllerGetTopicInfo, c.handleGetTopicInfo)
 	c.transportServer.RegisterHandler(transport.HandlerIDControllerCreateTopic, c.handleCreateTopic)
@@ -282,13 +282,13 @@ func (c *Controller) handleQueryTablesInRange(_ *transport.ConnectionContext, re
 	return responseWriter(responseBuff, nil)
 }
 
-func (c *Controller) handleGetOffsets(_ *transport.ConnectionContext, request []byte, responseBuff []byte, responseWriter transport.ResponseWriter) error {
+func (c *Controller) handlePrePush(_ *transport.ConnectionContext, request []byte, responseBuff []byte, responseWriter transport.ResponseWriter) error {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
 	if err := c.requestChecks(request, responseWriter); err != nil {
 		return err
 	}
-	var req GetOffsetsRequest
+	var req PrePushRequest
 	req.Deserialize(request, 2)
 	if err := c.checkLeaderVersion(req.LeaderVersion); err != nil {
 		return responseWriter(nil, err)
@@ -302,7 +302,7 @@ func (c *Controller) handleGetOffsets(_ *transport.ConnectionContext, request []
 	if err != nil {
 		return responseWriter(nil, err)
 	}
-	resp := GetOffsetsResponse{
+	resp := PrePushResponse{
 		Offsets:  offs,
 		Sequence: seq,
 		EpochsOK: epochsOK,

@@ -1,6 +1,7 @@
 package group
 
 import (
+	"github.com/spirit-labs/tektite/cluster"
 	"github.com/spirit-labs/tektite/common"
 	"github.com/spirit-labs/tektite/control"
 	"github.com/spirit-labs/tektite/kafkaprotocol"
@@ -8,6 +9,7 @@ import (
 	"github.com/spirit-labs/tektite/parthash"
 	"github.com/spirit-labs/tektite/sst"
 	"github.com/spirit-labs/tektite/topicmeta"
+	"github.com/spirit-labs/tektite/transport"
 	"sync"
 	"time"
 )
@@ -17,11 +19,16 @@ type Coordinator struct {
 	address       string
 	topicProvider topicInfoProvider
 	clientCache   *control.ClientCache
+	// FIXME sort out locking on coordinator - maybe just have one RW lock for everything and make sure start and stop are implemented properly
+	connFactory transport.ConnectionFactory
+	connCachesLock sync.RWMutex
+	connCaches      map[string]*transport.ConnectionCache
 	pusherClient  tablePusherClient
 	tableGetter   sst.TableGetter
 	groups        map[string]*group
 	groupsLock    sync.RWMutex
 	timers        sync.Map
+	membership cluster.MembershipState
 }
 
 type topicInfoProvider interface {
@@ -29,8 +36,7 @@ type topicInfoProvider interface {
 }
 
 type tablePusherClient interface {
-	// WriteOffsets Note that groupEpoch here is different to the generation id which increments on each rebalance
-	WriteOffsets(kvs []common.KV, groupID string, groupEpoch int32) error
+	OffsetCommit(req *kafkaprotocol.OffsetCommitRequest, groupEpoch int) (*kafkaprotocol.OffsetCommitResponse, error)
 }
 
 type Conf struct {
@@ -38,6 +44,7 @@ type Conf struct {
 	MaxSessionTimeout    time.Duration
 	InitialJoinDelay     time.Duration
 	NewMemberJoinTimeout time.Duration
+	MaxPusherConnectionsPerAddress int
 }
 
 func NewConf() Conf {
@@ -46,6 +53,7 @@ func NewConf() Conf {
 		MaxSessionTimeout:    DefaultMaxSessionTimeout,
 		InitialJoinDelay:     DefaultInitialJoinDelay,
 		NewMemberJoinTimeout: DefaultNewMemberJoinTimeout,
+		MaxPusherConnectionsPerAddress: DefaultMaxPusherConnectionsPerAddresss,
 	}
 }
 
@@ -54,18 +62,21 @@ const (
 	DefaultMaxSessionTimeout    = 30 * time.Minute
 	DefaultInitialJoinDelay     = 3 * time.Second
 	DefaultNewMemberJoinTimeout = 5 * time.Minute
+	DefaultMaxPusherConnectionsPerAddresss = 10
 )
 
 func NewCoordinator(cfg Conf, address string, topicProvider topicInfoProvider, controlClientCache *control.ClientCache,
-	pusherClient tablePusherClient, tableGetter sst.TableGetter) (*Coordinator, error) {
+	connFactory transport.ConnectionFactory, pusherClient tablePusherClient, tableGetter sst.TableGetter) (*Coordinator, error) {
 	return &Coordinator{
 		cfg:           cfg,
 		address:       address,
 		groups:        map[string]*group{},
 		topicProvider: topicProvider,
 		clientCache:   controlClientCache,
+		connFactory: connFactory,
 		pusherClient:  pusherClient,
 		tableGetter:   tableGetter,
+		connCaches: map[string]*transport.ConnectionCache{},
 	}, nil
 }
 
@@ -80,6 +91,25 @@ func (gc *Coordinator) Stop() error {
 		g.stop()
 	}
 	return nil
+}
+
+func (gc *Coordinator) MembershipChanged(memberState cluster.MembershipState) {
+	gc.groupsLock.Lock()
+	defer gc.groupsLock.Unlock()
+	gc.membership = memberState
+}
+
+func (gc *Coordinator) chooseTablePusherForGroup(partHash []byte) (string, bool) {
+	gc.groupsLock.RLock()
+	defer gc.groupsLock.RUnlock()
+	if len(gc.membership.Members) == 0 {
+		return "", false
+	}
+	memberID := CalcMemberForHash(partHash, len(gc.membership.Members))
+	data := gc.membership.Members[memberID].Data
+	var memberData common.MembershipData
+	memberData.Deserialize(data, 0)
+	return memberData.ListenAddress, true
 }
 
 // TODO Should be called when if agent leaves cluster
@@ -160,24 +190,17 @@ func (gc *Coordinator) LeaveGroup(groupID string, leaveInfos []MemberLeaveInfo) 
 	return g.Leave(leaveInfos)
 }
 
-func (gc *Coordinator) OffsetCommit(req *kafkaprotocol.OffsetCommitRequest) *kafkaprotocol.OffsetCommitResponse {
-	var resp kafkaprotocol.OffsetCommitResponse
-	resp.Topics = make([]kafkaprotocol.OffsetCommitResponseOffsetCommitResponseTopic, len(req.Topics))
-	for i, topicData := range req.Topics {
-		resp.Topics[i].Name = req.Topics[i].Name
-		resp.Topics[i].Partitions = make([]kafkaprotocol.OffsetCommitResponseOffsetCommitResponsePartition, len(topicData.Partitions))
-		for j, partData := range topicData.Partitions {
-			resp.Topics[i].Partitions[j].PartitionIndex = partData.PartitionIndex
-		}
-	}
+func (gc *Coordinator) OffsetCommit(req *kafkaprotocol.OffsetCommitRequest, reqVersion int16, respVersion int16) *kafkaprotocol.OffsetCommitResponse {
 	groupID := *req.GroupId
 	g, ok := gc.getGroup(groupID)
 	if !ok {
-		fillAllErrorCodesForOffsetCommit(&resp, kafkaprotocol.ErrorCodeGroupIDNotFound)
-		return &resp
+		return fillAllErrorCodesForOffsetCommit(req, kafkaprotocol.ErrorCodeGroupIDNotFound)
 	}
-	g.offsetCommit(req, &resp)
-	return &resp
+	resp, errCode := g.offsetCommit(req, reqVersion, respVersion)
+	if errCode != kafkaprotocol.ErrorCodeNone {
+		return fillAllErrorCodesForOffsetCommit(req, errCode)
+	}
+	return resp
 }
 
 func (gc *Coordinator) OffsetFetch(req *kafkaprotocol.OffsetFetchRequest) *kafkaprotocol.OffsetFetchResponse {
@@ -233,7 +256,7 @@ func (gc *Coordinator) groupHasMember(groupID string, memberID string) bool {
 	return g.hasMember(memberID)
 }
 
-func (gc *Coordinator) createGroup(groupID string, groupEpoch int32) *group {
+func (gc *Coordinator) createGroup(groupID string, groupEpoch int) *group {
 	gc.groupsLock.Lock()
 	defer gc.groupsLock.Unlock()
 	g, ok := gc.groups[groupID]
@@ -275,6 +298,33 @@ func (gc *Coordinator) cancelTimer(timerKey string) {
 func (gc *Coordinator) rescheduleTimer(timerKey string, delay time.Duration, action func()) {
 	gc.cancelTimer(timerKey)
 	gc.setTimer(timerKey, delay, action)
+}
+
+func (gc *Coordinator) getConnection(address string) (transport.Connection, error) {
+	connCache, ok := gc.getConnCache(address)
+	if !ok {
+		connCache = gc.createConnCache(address)
+	}
+	return connCache.GetConnection()
+}
+
+func (gc *Coordinator) getConnCache(address string) (*transport.ConnectionCache, bool) {
+	gc.connCachesLock.RLock()
+	defer gc.connCachesLock.RUnlock()
+	connCache, ok := gc.connCaches[address]
+	return connCache, ok
+}
+
+func (gc *Coordinator) createConnCache(address string) *transport.ConnectionCache {
+	gc.connCachesLock.Lock()
+	defer gc.connCachesLock.Unlock()
+	connCache, ok := gc.connCaches[address]
+	if ok {
+		return connCache
+	}
+	connCache = transport.NewConnectionCache(address, gc.cfg.MaxPusherConnectionsPerAddress, gc.connFactory)
+	gc.connCaches[address] = connCache
+	return connCache
 }
 
 const (

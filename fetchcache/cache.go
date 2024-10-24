@@ -36,7 +36,7 @@ type Cache struct {
 	transportServer transport.Server
 	cache           *ristretto.Cache
 	consist         *consistent.HashRing
-	connCaches      map[string]*ConnectionCache
+	xconnCaches      map[string]*transport.ConnectionCache
 	members         map[string]struct{}
 	cfg             Conf
 	stats           CacheStats
@@ -68,7 +68,7 @@ func NewCache(objStore objstore.Client, connFactory transport.ConnectionFactory,
 		objStore:        objStore,
 		connFactory:     connFactory,
 		transportServer: transportServer,
-		connCaches:      make(map[string]*ConnectionCache),
+		connCaches:      make(map[string]*transport.ConnectionCache),
 		members:         make(map[string]struct{}),
 		cache:           cache,
 		consist:         consistent.NewConsistentHash(cfg.VirtualFactor),
@@ -254,7 +254,7 @@ func (c *Cache) getConnection(address string) (transport.Connection, error) {
 	return connCache.GetConnection()
 }
 
-func (c *Cache) createConnCache(address string) *ConnectionCache {
+func (c *Cache) createConnCache(address string) *transport.ConnectionCache {
 	c.lock.RUnlock()
 	c.lock.Lock()
 	defer func() {
@@ -265,7 +265,7 @@ func (c *Cache) createConnCache(address string) *ConnectionCache {
 	if ok {
 		return connCache
 	}
-	connCache = NewConnectionCache(address, c.cfg.MaxConnectionsPerAddress, c.connFactory)
+	connCache = transport.NewConnectionCache(address, c.cfg.MaxConnectionsPerAddress, c.connFactory)
 	c.connCaches[address] = connCache
 	return connCache
 }

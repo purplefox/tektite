@@ -602,7 +602,7 @@ func TestNotificationWithMultipleTables(t *testing.T) {
 
 	numRegs := 10
 	for i := 0; i < numRegs; i++ {
-		_, seq, err := cl.GetOffsets(offsetInfos)
+		_, seq, err := cl.PrePush(offsetInfos)
 		require.NoError(t, err)
 		require.Equal(t, i+1, int(seq))
 	}
@@ -700,7 +700,7 @@ func verifyTableRegisteredNotification(t *testing.T, sequence int, tableID sst.S
 }
 
 func triggerTableAddedNotification(t *testing.T, cl Client, offInfos []offsets.GetOffsetTopicInfo) (sst.SSTableID, []offsets.OffsetTopicInfo) {
-	offs, seq, err := cl.GetOffsets(offInfos)
+	offs, seq, err := cl.PrePush(offInfos)
 	require.NoError(t, err)
 
 	regEntry := createRegEntry()

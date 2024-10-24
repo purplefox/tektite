@@ -176,7 +176,7 @@ func TestControllerGetOffsetsAndRegisterL0(t *testing.T) {
 	}()
 
 	// First get some offsets
-	offs, seq, err := cl.GetOffsets([]offsets.GetOffsetTopicInfo{
+	offs, seq, err := cl.PrePush([]offsets.GetOffsetTopicInfo{
 		{
 			TopicID: 0,
 			PartitionInfos: []offsets.GetOffsetPartitionInfo{

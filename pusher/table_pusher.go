@@ -17,6 +17,7 @@ import (
 	"github.com/spirit-labs/tektite/parthash"
 	"github.com/spirit-labs/tektite/sst"
 	"github.com/spirit-labs/tektite/topicmeta"
+	"github.com/spirit-labs/tektite/transport"
 	"go.uber.org/zap/zapcore"
 	"slices"
 	"sync"
@@ -35,18 +36,22 @@ caches them in memory
 * Writing produce responses to all produce requests which were included in the written SSTable
 */
 type TablePusher struct {
-	lock             sync.Mutex
-	cfg              Conf
-	topicProvider    topicInfoProvider
-	objStore         objstore.Client
-	clientFactory    controllerClientFactory
-	started          bool
-	stopping         atomic.Bool
-	controllerClient ControlClient
-	partitionRecords map[int]map[int][]bufferedEntry
-	partitionHashes  *parthash.PartitionHashes
-	writeTimer       *time.Timer
-	sizeBytes        int
+	lock               sync.Mutex
+	cfg                Conf
+	topicProvider      topicInfoProvider
+	objStore           objstore.Client
+	clientFactory      controllerClientFactory
+	started            bool
+	stopping           atomic.Bool
+	controllerClient   ControlClient
+	partitionRecords   map[int]map[int][]bufferedEntry
+	offsetKVs          map[string][]common.KV
+	offsetCompletions  map[string][]func(error)
+	groupEpochInfos    map[string]int
+	numOffsetsToCommit int
+	partitionHashes    *parthash.PartitionHashes
+	writeTimer         *time.Timer
+	sizeBytes          int
 }
 
 type bufferedEntry struct {
@@ -61,7 +66,7 @@ type topicInfoProvider interface {
 type controllerClientFactory func() (ControlClient, error)
 
 type ControlClient interface {
-	GetOffsets(infos []offsets.GetOffsetTopicInfo, epochInfos []control.GroupEpochInfo) ([]offsets.OffsetTopicInfo, int64,
+	PrePush(infos []offsets.GetOffsetTopicInfo, epochInfos []control.GroupEpochInfo) ([]offsets.OffsetTopicInfo, int64,
 		[]bool, error)
 	RegisterL0Table(sequence int64, regEntry lsm.RegistrationEntry) error
 	Close() error
@@ -84,12 +89,15 @@ func init() {
 func NewTablePusher(cfg Conf, topicProvider topicInfoProvider, objStore objstore.Client,
 	clientFactory controllerClientFactory, partitionHashes *parthash.PartitionHashes) (*TablePusher, error) {
 	return &TablePusher{
-		cfg:              cfg,
-		topicProvider:    topicProvider,
-		objStore:         objStore,
-		clientFactory:    clientFactory,
-		partitionHashes:  partitionHashes,
-		partitionRecords: map[int]map[int][]bufferedEntry{},
+		cfg:               cfg,
+		topicProvider:     topicProvider,
+		objStore:          objStore,
+		clientFactory:     clientFactory,
+		partitionHashes:   partitionHashes,
+		partitionRecords:  map[int]map[int][]bufferedEntry{},
+		groupEpochInfos:   map[string]int{},
+		offsetKVs:         map[string][]common.KV{},
+		offsetCompletions: map[string][]func(error){},
 	}, nil
 }
 
@@ -158,6 +166,11 @@ func (t *TablePusher) callCompletions(err error) {
 			for _, entry := range entries {
 				entry.completionFunc(err)
 			}
+		}
+	}
+	for _, offsetCompletions := range t.offsetCompletions {
+		for _, completionFunc := range offsetCompletions {
+			completionFunc(err)
 		}
 	}
 }
@@ -254,6 +267,104 @@ func (t *TablePusher) HandleProduceRequest(req *kafkaprotocol.ProduceRequest,
 	return nil
 }
 
+func (t *TablePusher) HandleOffsetCommit(_ *transport.ConnectionContext, request []byte, responseBuff []byte, responseWriter transport.ResponseWriter) error {
+	// FIXME, TODO check RPC versions?
+
+	var req OffsetCommitRequest
+	req.Deserialize(request, 0)
+
+	return t.handleOffsetCommit0(req.Request, req.GroupEpoch, func(resp *kafkaprotocol.OffsetCommitResponse) {
+		responseBuff = resp.Write(req.ResponseVersion, responseBuff, nil)
+		if err :=  responseWriter(responseBuff, nil); err != nil {
+			log.Errorf("failed to write offset commit: %v", err)
+		}
+	})
+}
+
+func (t *TablePusher) handleOffsetCommit0(req *kafkaprotocol.OffsetCommitRequest, groupEpoch int,
+	completionFunc func(resp *kafkaprotocol.OffsetCommitResponse)) error {
+
+	var resp kafkaprotocol.OffsetCommitResponse
+	// FIXME - prepare the response
+
+	groupID := *req.GroupId
+	lastEpoch, ok := t.groupEpochInfos[groupID]
+	if ok && groupEpoch < lastEpoch {
+		// FIXME - fill in response for invalid epoch
+	}
+	if !ok || groupEpoch > lastEpoch {
+		t.groupEpochInfos[groupID] = groupEpoch
+	}
+
+	partHash, err := parthash.CreateHash([]byte(groupID))
+	if err != nil {
+		return err
+	}
+	// Convert to KV pairs
+	var kvs []common.KV
+	for i, topicData := range req.Topics {
+		foundTopic := false
+		info, err := t.topicProvider.GetTopicInfo(*topicData.Name)
+		if err != nil {
+			log.Errorf("failed to find topic %s", *topicData.Name)
+		} else {
+			foundTopic = true
+		}
+		for j, partitionData := range topicData.Partitions {
+			if !foundTopic {
+				resp.Topics[i].Partitions[j].ErrorCode = kafkaprotocol.ErrorCodeUnknownTopicOrPartition
+				continue
+			}
+			offset := partitionData.CommittedOffset
+			// key is [partition_hash, topic_id, partition_id] value is [offset]
+			key := CreateOffsetKey(partHash, info.ID, int(partitionData.PartitionIndex))
+			value := make([]byte, 8)
+			binary.BigEndian.PutUint64(value, uint64(offset))
+			kvs = append(kvs, common.KV{
+				Key:   key,
+				Value: value,
+			})
+			t.numOffsetsToCommit++
+			log.Debugf("group %s topic %d partition %d committing offset %d", *req.GroupId, info.ID,
+				partitionData.PartitionIndex, offset)
+		}
+	}
+	t.offsetKVs[groupID] = append(t.offsetKVs[groupID], kvs...)
+	t.offsetCompletions[groupID] = append(t.offsetCompletions[groupID], func(err error) {
+		// FIXME! TODO deal with error!!
+		completionFunc(&resp)
+	})
+	return nil
+}
+
+func (t *TablePusher) failOffsetCommits(groupID string) {
+	log.Warnf("attempt to commit offsets for invalid group epoch for consumer group %s - will be ignored", groupID)
+	compls, ok := t.offsetCompletions[groupID]
+	if !ok {
+		panic("not found offset completions")
+	}
+	kvs, ok := t.offsetKVs[groupID]
+	if !ok {
+		panic("not found offset kvs")
+	}
+	// FIXME TODO set errors
+	for _, compl := range compls {
+		// FIXME
+		compl(nil)
+	}
+	delete(t.offsetKVs, groupID)
+	delete(t.offsetCompletions, groupID)
+	t.numOffsetsToCommit -= len(kvs)
+}
+
+func CreateOffsetKey(partHash []byte, topicID int, partitionID int) []byte {
+	var key []byte
+	key = append(key, partHash...)
+	key = binary.BigEndian.AppendUint64(key, uint64(topicID))
+	key = binary.BigEndian.AppendUint64(key, uint64(partitionID))
+	return key
+}
+
 func (t *TablePusher) handleRecords(topicID int, partitionID int, records [][]byte, completionFunc func(error)) {
 	topicMap, ok := t.partitionRecords[topicID]
 	if !ok {
@@ -326,7 +437,7 @@ func (t *TablePusher) write() error {
 	if err != nil {
 		return err
 	}
-	// First, we request offsets for the batches
+	// Prepare the offsets to request
 	getOffSetInfos := make([]offsets.GetOffsetTopicInfo, 0, len(t.partitionRecords))
 	for topicID, partitions := range t.partitionRecords {
 		var offsetInfo offsets.GetOffsetTopicInfo
@@ -346,7 +457,7 @@ func (t *TablePusher) write() error {
 		}
 		getOffSetInfos = append(getOffSetInfos, offsetInfo)
 	}
-	// The topics and partitions sent to GetOffsets must be ordered - this is because locks are applied for each
+	// The topics and partitions sent to PrePush must be ordered - this is because locks are applied for each
 	// offset to be got, and ordering the locks prevents deadlock between multiple pushers requesting offsets from
 	// same partitions.
 	if len(getOffSetInfos) > 1 {
@@ -361,15 +472,45 @@ func (t *TablePusher) write() error {
 			}
 		}
 	}
-	offs, seq, err := client.GetOffsets(getOffSetInfos)
+	// Prepare the epoch infos
+	groupEpochInfos := make([]control.GroupEpochInfo, 0, len(t.groupEpochInfos))
+	for groupID, epoch := range t.groupEpochInfos {
+		groupEpochInfos = append(groupEpochInfos, control.GroupEpochInfo{
+			GroupID:    groupID,
+			GroupEpoch: epoch,
+		})
+	}
+	// Now send the prePush call - this gets any offsets for topic data to be written and also provides epochs for
+	// the consumer groups of any offsets being committed - this allows them to be verified by the controller
+	// to prevent any zombie writes of offsets
+	offs, seq, epochsOK, err := client.PrePush(getOffSetInfos, groupEpochInfos)
 	if err != nil {
 		return err
 	}
 	if len(offs) != len(getOffSetInfos) {
 		panic("invalid offsets returned")
 	}
+	if len(epochsOK) != len(t.groupEpochInfos) {
+		panic("invalid epochs ok returned")
+	}
+
+	for i, ok := range epochsOK {
+		if !ok {
+			// If invalid epochs for any committed offsets are returned we fail the offset commits for that groupID
+			// and they are not included in the table that is pushed
+			groupID := groupEpochInfos[i].GroupID
+			t.failOffsetCommits(groupID)
+		}
+	}
+
 	// Create KVs for the batches
-	kvs := make([]common.KV, 0, len(offs))
+	kvs := make([]common.KV, 0, len(offs)+t.numOffsetsToCommit)
+
+	// Add any offsets to commit
+	for _, offsetKVs := range t.offsetKVs {
+		kvs = append(kvs, offsetKVs...)
+	}
+
 	for i, topOffset := range offs {
 		partitionRecs := t.partitionRecords[topOffset.TopicID]
 		for j, partInfo := range topOffset.PartitionInfos {
@@ -387,7 +528,6 @@ func (t *TablePusher) write() error {
 						For each batch there will be one entry in the database.
 						The key is: [partition_hash, offset, version]
 						The value is: the record batch bytes
-
 						The partition hash is created by sha256 hashing the [topic_id, partition_id] and taking the first 16 bytes.
 						This creates an effectively unique key as the probability of collision is extraordinarily remote
 						(secure random UUIDs are created the same way)
@@ -454,6 +594,41 @@ func (t *TablePusher) write() error {
 	t.callCompletions(nil)
 	// reset
 	t.partitionRecords = make(map[int]map[int][]bufferedEntry)
+	if t.numOffsetsToCommit > 0 {
+		t.offsetKVs = map[string][]common.KV{}
+		t.offsetCompletions = map[string][]func(error){}
+		t.groupEpochInfos = make(map[string]int)
+		t.numOffsetsToCommit = 0
+	}
 	t.sizeBytes = 0
 	return nil
+}
+
+type OffsetCommitRequest struct {
+	GroupEpoch     int
+	RequestVersion int16
+	ResponseVersion int16
+	Request        *kafkaprotocol.OffsetCommitRequest
+}
+
+func (o *OffsetCommitRequest) Serialize(buff []byte) []byte {
+	buff = binary.BigEndian.AppendUint64(buff, uint64(o.GroupEpoch))
+	buff = binary.BigEndian.AppendUint16(buff, uint16(o.RequestVersion))
+	buff = binary.BigEndian.AppendUint16(buff, uint16(o.ResponseVersion))
+	return o.Request.Write(o.RequestVersion, buff, nil)
+}
+
+func (o *OffsetCommitRequest) Deserialize(buff []byte, offset int) int {
+	o.GroupEpoch = int(binary.BigEndian.Uint64(buff))
+	offset += 8
+	o.RequestVersion = int16(binary.BigEndian.Uint16(buff[offset:]))
+	offset += 2
+	o.ResponseVersion = int16(binary.BigEndian.Uint16(buff[offset:]))
+	offset += 2
+	o.Request = &kafkaprotocol.OffsetCommitRequest{}
+	offset, err := o.Request.Read(o.RequestVersion, buff[offset:])
+	if err != nil {
+		panic(err)
+	}
+	return offset
 }

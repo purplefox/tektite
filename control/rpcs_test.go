@@ -144,7 +144,7 @@ func TestSerializeDeserializeRegisterTableListenerResponse(t *testing.T) {
 }
 
 func TestSerializeDeserializeGetOffsetsRequest(t *testing.T) {
-	req := GetOffsetsRequest{
+	req := PrePushRequest{
 		LeaderVersion: 4536,
 		Infos: []offsets.GetOffsetTopicInfo{
 			{
@@ -187,14 +187,14 @@ func TestSerializeDeserializeGetOffsetsRequest(t *testing.T) {
 	var buff []byte
 	buff = append(buff, 1, 2, 3)
 	buff = req.Serialize(buff)
-	var req2 GetOffsetsRequest
+	var req2 PrePushRequest
 	off := req2.Deserialize(buff, 3)
 	require.Equal(t, req, req2)
 	require.Equal(t, off, len(buff))
 }
 
 func TestSerializeDeserializeGetOffsetsResponse(t *testing.T) {
-	resp := GetOffsetsResponse{
+	resp := PrePushResponse{
 		Offsets: []offsets.OffsetTopicInfo{
 			{
 				TopicID: 12323,
@@ -231,7 +231,7 @@ func TestSerializeDeserializeGetOffsetsResponse(t *testing.T) {
 	var buff []byte
 	buff = append(buff, 1, 2, 3)
 	buff = resp.Serialize(buff)
-	var resp2 GetOffsetsResponse
+	var resp2 PrePushResponse
 	off := resp2.Deserialize(buff, 3)
 	require.Equal(t, resp, resp2)
 	require.Equal(t, off, len(buff))

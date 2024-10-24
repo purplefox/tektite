@@ -15,4 +15,5 @@ const (
 	HandlerIDMetaLocalCacheTopicDeleted
 	HandlerIDFetchCacheGetTableBytes
 	HandlerIDFetcherTableRegisteredNotification
+	HandlerIDTablePusherOffsetCommit
 )

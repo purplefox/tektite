@@ -9,7 +9,8 @@ import (
 	"github.com/spirit-labs/tektite/common"
 	"github.com/spirit-labs/tektite/kafkaprotocol"
 	log "github.com/spirit-labs/tektite/logger"
-	"sort"
+	"github.com/spirit-labs/tektite/pusher"
+	"github.com/spirit-labs/tektite/transport"
 	"sync"
 	"time"
 )
@@ -33,7 +34,7 @@ type group struct {
 	stopped                 bool
 	newMemberAdded          bool
 	committedOffsets        map[int]map[int32]int64
-	groupEpoch              int32
+	groupEpoch              int
 }
 
 type member struct {
@@ -57,7 +58,7 @@ the mapping from group to agent, and returns the value
 if no entry in map, then it calls the controller to get the owner, if not the owner then it returns an error, otherwise
 adds entry to map.
 4. OffsetCommit is handled - writeOffsets is called on TablePusher passing groupID and groupEpoch. When table write() is called
-in same call as GetOffsets we also pass the group IDs and epochs of any offsets in the table. The controller compares these
+in same call as PrePush we also pass the group IDs and epochs of any offsets in the table. The controller compares these
 with current epochs for the groups and returns an error if they don't match. The table is then pushed without the errord offsets
 and the error is passed back to the group which called writeOffsets which is blocking and returns an error to the caller.
 
@@ -694,12 +695,22 @@ func (g *group) hasMember(memberID string) bool {
 	return ok
 }
 
-func fillAllErrorCodesForOffsetCommit(resp *kafkaprotocol.OffsetCommitResponse, errorCode int) {
+func fillAllErrorCodesForOffsetCommit(req *kafkaprotocol.OffsetCommitRequest, errorCode int) *kafkaprotocol.OffsetCommitResponse {
+	var resp kafkaprotocol.OffsetCommitResponse
+	resp.Topics = make([]kafkaprotocol.OffsetCommitResponseOffsetCommitResponseTopic, len(req.Topics))
+	for i, topicData := range req.Topics {
+		resp.Topics[i].Name = req.Topics[i].Name
+		resp.Topics[i].Partitions = make([]kafkaprotocol.OffsetCommitResponseOffsetCommitResponsePartition, len(topicData.Partitions))
+		for j, partData := range topicData.Partitions {
+			resp.Topics[i].Partitions[j].PartitionIndex = partData.PartitionIndex
+		}
+	}
 	for i, topicData := range resp.Topics {
 		for j := range topicData.Partitions {
 			resp.Topics[i].Partitions[j].ErrorCode = int16(errorCode)
 		}
 	}
+	return &resp
 }
 
 func fillAllErrorCodesForOffsetFetch(resp *kafkaprotocol.OffsetFetchResponse, errorCode int) {
@@ -710,72 +721,53 @@ func fillAllErrorCodesForOffsetFetch(resp *kafkaprotocol.OffsetFetchResponse, er
 	}
 }
 
-func (g *group) offsetCommit(req *kafkaprotocol.OffsetCommitRequest, resp *kafkaprotocol.OffsetCommitResponse) {
+func (g *group) offsetCommit(req *kafkaprotocol.OffsetCommitRequest, reqVersion int16, respVersion int16) (*kafkaprotocol.OffsetCommitResponse, int) {
 	g.lock.Lock()
 	defer g.lock.Unlock()
 	if int(req.GenerationIdOrMemberEpoch) != g.generationID {
-		fillAllErrorCodesForOffsetCommit(resp, kafkaprotocol.ErrorCodeIllegalGeneration)
-		return
+		return nil, kafkaprotocol.ErrorCodeIllegalGeneration
 	}
 	_, ok := g.members[*req.MemberId]
 	if !ok {
-		fillAllErrorCodesForOffsetCommit(resp, kafkaprotocol.ErrorCodeUnknownMemberID)
+		return nil, kafkaprotocol.ErrorCodeUnknownMemberID
 	}
-	var kvs []common.KV
-	for i, topicData := range req.Topics {
-		foundTopic := false
-		info, err := g.gc.topicProvider.GetTopicInfo(*topicData.Name)
-		if err != nil {
-			log.Errorf("failed to find topic %s", *topicData.Name)
-		} else {
-			foundTopic = true
-		}
-		for j, partitionData := range topicData.Partitions {
-			if !foundTopic {
-				resp.Topics[i].Partitions[j].ErrorCode = kafkaprotocol.ErrorCodeUnknownTopicOrPartition
-				continue
-			}
-			offset := partitionData.CommittedOffset
-			// key is [partition_hash, topic_id, partition_id] value is [offset]
-			key := createOffsetKey(g.partHash, info.ID, int(partitionData.PartitionIndex))
-			value := make([]byte, 8)
-			binary.BigEndian.PutUint64(value, uint64(offset))
-			kvs = append(kvs, common.KV{
-				Key:   key,
-				Value: value,
-			})
-			log.Debugf("group %s topic %d partition %d committing offset %d", g.id, info.ID, partitionData.PartitionIndex, offset)
-		}
+	pusherAddress, ok := g.gc.chooseTablePusherForGroup(g.partHash)
+	if !ok {
+		// No available pushers
+		log.Warnf("cannot commit offsets no members in cluster")
+		return nil, kafkaprotocol.ErrorCodeLeaderNotAvailable
 	}
-	if len(kvs) > 1 {
-		// sort them
-		sort.Slice(kvs, func(i, j int) bool {
-			return bytes.Compare(kvs[i].Key, kvs[j].Key) < 0
-		})
+	conn, err := g.gc.getConnection(pusherAddress)
+	if err != nil {
+		log.Warnf("failed to get table pusher connection %v", err)
+		return nil, kafkaprotocol.ErrorCodeLeaderNotAvailable
 	}
-	if err := g.gc.pusherClient.WriteOffsets(kvs, g.id, g.groupEpoch); err != nil {
+	var commitReq pusher.OffsetCommitRequest
+	commitReq.RequestVersion = reqVersion
+	commitReq.ResponseVersion = respVersion
+	commitReq.Request = req
+	buff := commitReq.Serialize(nil)
+	r, err := conn.SendRPC(transport.HandlerIDTablePusherOffsetCommit, buff)
+	if err != nil {
 		if common.IsUnavailableError(err) {
 			log.Warnf("failed to write offsets to table pusher: %v", err)
-			fillAllErrorCodesForOffsetCommit(resp, kafkaprotocol.ErrorCodeLeaderNotAvailable)
-			return
+			return nil, kafkaprotocol.ErrorCodeLeaderNotAvailable
 		} else {
 			log.Errorf("failed to write offsets to table pusher: %v", err)
-			fillAllErrorCodesForOffsetCommit(resp, kafkaprotocol.ErrorCodeUnknownServerError)
-			return
+			return nil, kafkaprotocol.ErrorCodeUnknownServerError
 		}
 	}
-}
-
-func createOffsetKey(partHash []byte, topicID int, partitionID int) []byte {
-	var key []byte
-	key = append(key, partHash...)
-	key = binary.BigEndian.AppendUint64(key, uint64(topicID))
-	key = binary.BigEndian.AppendUint64(key, uint64(partitionID))
-	return key
+	var commitResp kafkaprotocol.OffsetCommitResponse
+	_, err = commitResp.Read(respVersion, r)
+	if err != nil {
+		log.Errorf("failed to read commit response from table pusher: %v", err)
+		return nil, kafkaprotocol.ErrorCodeUnknownServerError
+	}
+	return &commitResp, kafkaprotocol.ErrorCodeNone
 }
 
 func (g *group) loadOffset(topicID int, partitionID int) (int64, error) {
-	key := createOffsetKey(g.partHash, topicID, partitionID)
+	key := pusher.CreateOffsetKey(g.partHash, topicID, partitionID)
 	cl, err := g.gc.clientCache.GetClient()
 	if err != nil {
 		return 0, err

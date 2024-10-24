@@ -11,7 +11,7 @@ import (
 )
 
 type Client interface {
-	GetOffsets(infos []offsets.GetOffsetTopicInfo, epochInfos []GroupEpochInfo) ([]offsets.OffsetTopicInfo, int64,
+	PrePush(infos []offsets.GetOffsetTopicInfo, epochInfos []GroupEpochInfo) ([]offsets.OffsetTopicInfo, int64,
 		[]bool, error)
 
 	ApplyLsmChanges(regBatch lsm.RegistrationBatch) error
@@ -118,13 +118,13 @@ func (c *client) RegisterTableListener(topicID int, partitionID int, memberID st
 	return resp.LastReadableOffset, nil
 }
 
-func (c *client) GetOffsets(infos []offsets.GetOffsetTopicInfo, epochInfos []GroupEpochInfo) ([]offsets.OffsetTopicInfo,
+func (c *client) PrePush(infos []offsets.GetOffsetTopicInfo, epochInfos []GroupEpochInfo) ([]offsets.OffsetTopicInfo,
 	int64, []bool, error) {
 	conn, err := c.getConnection()
 	if err != nil {
 		return nil, 0, nil, err
 	}
-	req := GetOffsetsRequest{
+	req := PrePushRequest{
 		LeaderVersion:   c.leaderVersion,
 		Infos:           infos,
 		GroupEpochInfos: epochInfos,
@@ -134,7 +134,7 @@ func (c *client) GetOffsets(infos []offsets.GetOffsetTopicInfo, epochInfos []Gro
 	if err != nil {
 		return nil, 0, nil, err
 	}
-	var resp GetOffsetsResponse
+	var resp PrePushResponse
 	resp.Deserialize(respBuff, 0)
 	return resp.Offsets, resp.Sequence, resp.EpochsOK, nil
 }
