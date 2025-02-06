@@ -11,7 +11,6 @@ import (
 	"github.com/spirit-labs/tektite/parthash"
 	"github.com/spirit-labs/tektite/sst"
 	"github.com/spirit-labs/tektite/topicmeta"
-	"github.com/spirit-labs/tektite/transport"
 	"sync"
 	"sync/atomic"
 )
@@ -39,12 +38,12 @@ controller and lastReadableOffset is updated it sends a notification to all agen
 the cache of ids in PartitionRecentTables.
 */
 type BatchFetcher struct {
-	objStore           objstore.Client
-	topicProvider      topicInfoProvider
-	partitionHashes    *parthash.PartitionHashes
-	controlFactory     control.ClientFactory
-	tableGetter        sst.TableGetter
-	recentTables       PartitionRecentTables
+	objStore        objstore.Client
+	topicProvider   topicInfoProvider
+	partitionHashes *parthash.PartitionHashes
+	controlFactory  control.ClientFactory
+	tableGetter     sst.TableGetter
+	//recentTables       PartitionRecentTables
 	controlClientCache *control.ClientCache
 	dataBucketName     string
 	readExecs          []readExecutor
@@ -73,7 +72,7 @@ func NewBatchFetcher(objStore objstore.Client, topicProvider topicInfoProvider, 
 		memberID:           -1,
 		compressionType:    cfg.FetchCompressionType,
 	}
-	bf.recentTables = CreatePartitionRecentTables(cfg.MaxCachedTablesPerPartition, bf)
+	//bf.recentTables = CreatePartitionRecentTables(cfg.MaxCachedTablesPerPartition, bf)
 	return bf, nil
 }
 
@@ -129,12 +128,12 @@ func (b *BatchFetcher) Stop() error {
 	return nil
 }
 
-func (b *BatchFetcher) HandleTableRegisteredNotification(_ *transport.ConnectionContext, request []byte,
-	_ []byte, _ transport.ResponseWriter) error {
-	notif := &control.TablesRegisteredNotification{}
-	notif.Deserialize(request, 0)
-	return b.recentTables.handleTableRegisteredNotification(notif)
-}
+//func (b *BatchFetcher) HandleTableRegisteredNotification(_ *transport.ConnectionContext, request []byte,
+//	_ []byte, _ transport.ResponseWriter) error {
+//	notif := &control.TablesRegisteredNotification{}
+//	notif.Deserialize(request, 0)
+//	return b.recentTables.handleTableRegisteredNotification(notif)
+//}
 
 func (b *BatchFetcher) HandleFetchRequest(authContext *auth.Context, apiVersion int16, req *kafkaprotocol.FetchRequest,
 	completionFunc func(resp *kafkaprotocol.FetchResponse) error) error {
@@ -179,7 +178,7 @@ func (b *BatchFetcher) getClient() (control.Client, error) {
 
 func (b *BatchFetcher) MembershipChanged(thisMemberID int32, membership cluster.MembershipState) error {
 	atomic.StoreInt32(&b.memberID, thisMemberID)
-	b.recentTables.membershipChanged(membership)
+	//b.recentTables.membershipChanged(membership)
 	return nil
 }
 

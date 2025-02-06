@@ -222,14 +222,21 @@ func (p *PartitionRecentTables) createPartitionTables(partitionID int, partition
 func (p *PartitionRecentTables) handleTableRegisteredNotification(notification *control.TablesRegisteredNotification) error {
 	p.sequenceLock.Lock()
 	defer p.sequenceLock.Unlock()
+	epoch := atomic.LoadInt64(&p.bf.resetSequence)
+	if epoch != notification.Epoch {
+		log.Warnf("invalid epoch in notification %d expected %d- ignoring", notification.Epoch, epoch)
+		return nil
+	}
+	log.Infof("%p got table registered notification, sequence %d", p, notification.Sequence)
 	if notification.LeaderVersion != p.currentLeaderVersion {
-		log.Warnf("received table registered notification from invalid leader version expected %d actual %d",
-			p.currentLeaderVersion, notification.LeaderVersion)
+		log.Warnf("%p received table registered notification from invalid leader version expected %d actual %d",
+			p, p.currentLeaderVersion, notification.LeaderVersion)
 		return nil
 	}
 	if int(notification.Sequence) != p.lastReceivedSequence+1 {
 		// unexpected sequence number
-		log.Warn("batch fetcher received out of sequence readable offsets notification. will invalidate")
+		log.Warnf("%p batch fetcher received out of sequence readable offsets notification. will invalidate. expected %d actual %d",
+			p, p.lastReceivedSequence+1, notification.Sequence)
 		p.maybeInvalidateRecentTables()
 		return nil
 	}
@@ -252,6 +259,10 @@ func (p *PartitionRecentTables) handleTableRegisteredNotification(notification *
 			partitionTables, ok := partitionMap[partitionInfo.PartitionID]
 			if !ok {
 				panic(fmt.Sprintf("cannot find partition tables for partition %d", partitionInfo.PartitionID))
+			}
+			for _, tabID := range notification.TableIDs {
+				log.Infof("%p, recent tables partition %d offset %d got table notification for table %s", partitionInfo.PartitionID,
+					p, partitionInfo.Offset, tabID)
 			}
 			if err := partitionTables.addTableIDs(notification.TableIDs, partitionInfo.Offset, fetchStates); err != nil {
 				return err

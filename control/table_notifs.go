@@ -28,14 +28,14 @@ type tableListeners struct {
 }
 
 type tableAddedListener struct {
-	lock          sync.Mutex
-	connCaches    *transport.ConnCaches
-	address       string
-	connection    transport.Connection
-	memberID      int32
-	resetSequence int64
-	sequence      int64
-	lastSentTime  uint64
+	lock         sync.Mutex
+	connCaches   *transport.ConnCaches
+	address      string
+	connection   transport.Connection
+	memberID     int32
+	epoch        int64
+	sequence     int64
+	lastSentTime uint64
 }
 
 const notificationWriteTimeout = 2 * time.Second
@@ -176,7 +176,7 @@ func (t *tableListeners) maybeRegisterListenerForPartition(memberID int32, addre
 	partitionMap[partitionID] = append(partitionMap[partitionID], id)
 }
 
-func (t *tableListeners) isRegisteredForPartition(memberID int32, topicID int, partitionID int, resetSequence int64) bool {
+func (t *tableListeners) isRegisteredForPartition(memberID int32, topicID int, partitionID int, epoch int64) bool {
 	t.lock.RLock()
 	defer t.lock.RUnlock()
 	id, ok := t.memberIDToListenerIDMap[memberID]
@@ -187,10 +187,10 @@ func (t *tableListeners) isRegisteredForPartition(memberID int32, topicID int, p
 	if !ok {
 		return false
 	}
-	if listener.resetSequence != resetSequence {
-		// The resetSequence has changed - the fetcher sends an incremented resetSequence when it detects a
+	if listener.epoch != epoch {
+		// The epoch has changed - the fetcher sends an incremented epoch when it detects a
 		// discontinuity in the notification sequence, this causes table notification listeners to be invalidated.
-		t.resetListener(listener, resetSequence)
+		t.resetListener(listener, epoch)
 	}
 	partitionMap, ok := t.partitionListeners[topicID]
 	if !ok {
@@ -208,7 +208,7 @@ func (t *tableListeners) isRegisteredForPartition(memberID int32, topicID int, p
 	return false
 }
 
-func (t *tableListeners) resetListener(listener *tableAddedListener, resetSequence int64) {
+func (t *tableListeners) resetListener(listener *tableAddedListener, epoch int64) {
 	t.lock.RUnlock()
 	t.lock.Lock()
 	defer func() {
@@ -216,7 +216,7 @@ func (t *tableListeners) resetListener(listener *tableAddedListener, resetSequen
 		t.lock.RLock()
 	}()
 	t.unregisterListenersForMemberID(listener.memberID)
-	listener.resetSequence = resetSequence
+	listener.epoch = epoch
 }
 
 func (t *tableListeners) sendTableRegisteredNotification(tableIDs []sst.SSTableID, infos []offsets.OffsetTopicInfo) error {
@@ -309,8 +309,10 @@ func (l *tableAddedListener) sendNotificationNoLock(buff []byte) error {
 	// We copy the buffer and change the sequence to avoid serializing multiple times
 	copied := make([]byte, len(buff))
 	copy(copied, buff)
-	// This assumes sequence is the first member in the serialized form
+	// This assumes sequence and epoch are the first and second members in the serialized form
+	log.Infof("sending notification with sequence %d", l.sequence)
 	binary.BigEndian.PutUint64(copied, uint64(l.sequence))
+	binary.BigEndian.PutUint64(copied[8:], uint64(l.epoch))
 	l.sequence++
 	l.lastSentTime = arista.NanoTime()
 	if err := conn.SendOneway(transport.HandlerIDFetcherTableRegisteredNotification, copied); err != nil {

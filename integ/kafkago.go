@@ -2,6 +2,7 @@ package integ
 
 import (
 	kafkago "github.com/confluentinc/confluent-kafka-go/v2/kafka"
+	"github.com/spirit-labs/tektite/common"
 	"github.com/spirit-labs/tektite/compress"
 	"github.com/spirit-labs/tektite/kafka"
 	"strconv"
@@ -20,7 +21,7 @@ func NewKafkaGoProducer(address string, tlsEnabled bool, serverCertFile string, 
 		"acks":               "all",
 		"enable.idempotence": strconv.FormatBool(true),
 		"compression.type":   compressionType.String(),
-		"debug":              "all",
+		//"debug":              "all",
 	}
 	if tlsEnabled {
 		cm = configureConfigureForTls(cm, serverCertFile, clientCertFile, clientPrivateKeyFile)
@@ -32,24 +33,30 @@ func NewKafkaGoProducer(address string, tlsEnabled bool, serverCertFile string, 
 	return &KafkaGoProducer{producer}, nil
 }
 
-func (k *KafkaGoProducer) Produce(topicName string, messages []kafka.Message) error {
-	deliveryChan := make(chan kafkago.Event, len(messages))
-	for _, km := range messages {
-		msg := &kafkago.Message{
-			TopicPartition: kafkago.TopicPartition{Topic: &topicName, Partition: kafkago.PartitionAny},
-			Key:            km.Key,
-			Value:          km.Value,
-			Timestamp:      km.TimeStamp,
+func (k *KafkaGoProducer) Produce(topicProduces ...TopicProduce) error {
+	var msgs []*kafkago.Message
+	for _, topicProduce := range topicProduces {
+		for _, km := range topicProduce.Messages {
+			msg := &kafkago.Message{
+				TopicPartition: kafkago.TopicPartition{Topic: common.StrPtr(topicProduce.TopicName), Partition: kafkago.PartitionAny},
+				Key:            km.Key,
+				Value:          km.Value,
+				Timestamp:      km.TimeStamp,
+			}
+			for _, hdr := range km.Headers {
+				msg.Headers = append(msg.Headers, kafkago.Header{Key: hdr.Key, Value: hdr.Value})
+			}
+			msgs = append(msgs, msg)
 		}
-		for _, hdr := range km.Headers {
-			msg.Headers = append(msg.Headers, kafkago.Header{Key: hdr.Key, Value: hdr.Value})
-		}
+	}
+	deliveryChan := make(chan kafkago.Event, len(msgs))
+	for _, msg := range msgs {
 		err := k.producer.Produce(msg, deliveryChan)
 		if err != nil {
 			return err
 		}
 	}
-	for i := 0; i < len(messages); i++ {
+	for i := 0; i < len(msgs); i++ {
 		e := <-deliveryChan
 		m := e.(*kafkago.Message)
 		if m.TopicPartition.Error != nil {
@@ -68,7 +75,7 @@ type KafkaGoConsumer struct {
 	consumer *kafkago.Consumer
 }
 
-func NewKafkaGoConsumer(address string, topicName string, groupID string, tlsEnabled bool, serverCertFile string, clientCertFile string, clientPrivateKeyFile string) (Consumer, error) {
+func NewKafkaGoConsumer(address string, groupID string, tlsEnabled bool, serverCertFile string, clientCertFile string, clientPrivateKeyFile string) (Consumer, error) {
 	cm := kafkago.ConfigMap{
 		"bootstrap.servers":  address,
 		"group.id":           groupID,
@@ -83,10 +90,11 @@ func NewKafkaGoConsumer(address string, topicName string, groupID string, tlsEna
 	if err != nil {
 		return nil, err
 	}
-	if err := consumer.Subscribe(topicName, nil); err != nil {
-		return nil, err
-	}
 	return &KafkaGoConsumer{consumer}, nil
+}
+
+func (l *KafkaGoConsumer) Subscribe(topicName string) error {
+	return l.consumer.Subscribe(topicName, nil)
 }
 
 func (k *KafkaGoConsumer) Fetch(timeout time.Duration) (*kafka.Message, error) {

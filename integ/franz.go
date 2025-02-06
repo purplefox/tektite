@@ -62,22 +62,24 @@ func NewFranzProducer(address string, tlsEnabled bool, serverCertFile string, cl
 	return &FranzProducer{client: client}, nil
 }
 
-func (f *FranzProducer) Produce(topicName string, messages []kafka.Message) error {
-	msgs := make([]*kgo.Record, len(messages))
-	for i, m := range messages {
-		msg := &kgo.Record{
-			Key:       m.Key,
-			Value:     m.Value,
-			Timestamp: m.TimeStamp,
-			Topic:     topicName,
+func (f *FranzProducer) Produce(topicProduces ...TopicProduce) error {
+	var msgs []*kgo.Record
+	for _, topicProduce := range topicProduces {
+		for _, m := range topicProduce.Messages {
+			msg := &kgo.Record{
+				Key:       m.Key,
+				Value:     m.Value,
+				Timestamp: m.TimeStamp,
+				Topic:     topicProduce.TopicName,
+			}
+			for _, hdr := range m.Headers {
+				msg.Headers = append(msg.Headers, kgo.RecordHeader{
+					Key:   hdr.Key,
+					Value: hdr.Value,
+				})
+			}
+			msgs = append(msgs, msg)
 		}
-		for _, hdr := range m.Headers {
-			msg.Headers = append(msg.Headers, kgo.RecordHeader{
-				Key:   hdr.Key,
-				Value: hdr.Value,
-			})
-		}
-		msgs[i] = msg
 	}
 	return f.client.ProduceSync(context.Background(), msgs...).FirstErr()
 }
@@ -91,7 +93,7 @@ type FranzConsumer struct {
 	client *kgo.Client
 }
 
-func NewFranzConsumer(address string, topicName string, groupID string, tlsEnabled bool, serverCertFile string,
+func NewFranzConsumer(address string, groupID string, tlsEnabled bool, serverCertFile string,
 	clientCertFile string, clientPrivateKeyFile string) (Consumer, error) {
 	logger := kgo.BasicLogger(os.Stdout, kgo.LogLevelDebug, func() string {
 		return ""
@@ -114,14 +116,12 @@ func NewFranzConsumer(address string, topicName string, groupID string, tlsEnabl
 			kgo.SeedBrokers(address),
 			kgo.DialTLSConfig(goTls),
 			kgo.ConsumerGroup(groupID),
-			kgo.ConsumeTopics(topicName),
 			kgo.WithLogger(logger),
 		)
 	} else {
 		client, err = kgo.NewClient(
 			kgo.SeedBrokers(address),
 			kgo.ConsumerGroup(groupID),
-			kgo.ConsumeTopics(topicName),
 			kgo.WithLogger(logger),
 		)
 	}
@@ -129,6 +129,11 @@ func NewFranzConsumer(address string, topicName string, groupID string, tlsEnabl
 		return nil, err
 	}
 	return &FranzConsumer{client: client}, nil
+}
+
+func (f *FranzConsumer) Subscribe(topicName string) error {
+	f.client.AddConsumeTopics(topicName)
+	return nil
 }
 
 func (f *FranzConsumer) Fetch(timeout time.Duration) (*kafka.Message, error) {

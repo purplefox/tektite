@@ -883,6 +883,7 @@ func (t *TablePusher) write() error {
 	t.callCompletions(nil)
 	// reset - the state
 	t.reset()
+	//log.Infof("table pusher pushed table %s with keystart %v keyend %v", tableID, smallestKey, largestKey)
 	return nil
 }
 

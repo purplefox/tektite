@@ -455,6 +455,7 @@ func (g *GetGroupCoordinatorInfoResponse) Deserialize(buff []byte, offset int) i
 
 type TablesRegisteredNotification struct {
 	Sequence      int64
+	Epoch         int64
 	LeaderVersion int
 	TableIDs      []sst.SSTableID
 	Infos         []offsets.OffsetTopicInfo
@@ -462,6 +463,7 @@ type TablesRegisteredNotification struct {
 
 func (r *TablesRegisteredNotification) Serialize(buff []byte) []byte {
 	buff = binary.BigEndian.AppendUint64(buff, uint64(r.Sequence))
+	buff = binary.BigEndian.AppendUint64(buff, uint64(r.Epoch))
 	buff = binary.BigEndian.AppendUint64(buff, uint64(r.LeaderVersion))
 	buff = binary.BigEndian.AppendUint32(buff, uint32(len(r.TableIDs)))
 	for _, id := range r.TableIDs {
@@ -482,6 +484,8 @@ func (r *TablesRegisteredNotification) Serialize(buff []byte) []byte {
 
 func (r *TablesRegisteredNotification) Deserialize(buff []byte, offset int) int {
 	r.Sequence = int64(binary.BigEndian.Uint64(buff[offset:]))
+	offset += 8
+	r.Epoch = int64(binary.BigEndian.Uint64(buff[offset:]))
 	offset += 8
 	r.LeaderVersion = int(binary.BigEndian.Uint64(buff[offset:]))
 	offset += 8

@@ -77,7 +77,10 @@ func testProduceConsume(t *testing.T, producerFactory ProducerFactory, consumerF
 			TimeStamp: time.Now(),
 		})
 	}
-	err := producer.Produce(topicName, msgs)
+	err := producer.Produce(TopicProduce{
+		TopicName: topicName,
+		Messages:  msgs,
+	})
 	require.NoError(t, err)
 
 	consumer := createConsumer(t, consumerFactory, address, topicName, "test_group", serverTls, clientTls)
@@ -187,7 +190,7 @@ func startMinio(t *testing.T) (miniocl.Conf, *minio.MinioContainer) {
 	return cfg, minioContainer
 }
 
-func createProducer(t *testing.T, factory ProducerFactory, address string, serverTls bool, clientTls bool,
+func createProducer(t *testing.T, factory ProducerFactory, bootstrapAddress string, serverTls bool, clientTls bool,
 	compressionType compress.CompressionType) Producer {
 	clientKey := ""
 	clientCert := ""
@@ -195,7 +198,7 @@ func createProducer(t *testing.T, factory ProducerFactory, address string, serve
 		clientKey = clientKeyPath
 		clientCert = clientCertPath
 	}
-	producer, err := factory(address, serverTls, serverCertPath, clientCert, clientKey, compressionType)
+	producer, err := factory(bootstrapAddress, serverTls, serverCertPath, clientCert, clientKey, compressionType)
 	require.NoError(t, err)
 	return producer
 }
@@ -208,7 +211,9 @@ func createConsumer(t *testing.T, factory ConsumerFactory, address string, topic
 		clientKey = clientKeyPath
 		clientCert = clientCertPath
 	}
-	consumer, err := factory(address, topicName, groupID, serverTls, serverCertPath, clientCert, clientKey)
+	consumer, err := factory(address, groupID, serverTls, serverCertPath, clientCert, clientKey)
+	require.NoError(t, err)
+	err = consumer.Subscribe(topicName)
 	require.NoError(t, err)
 	return consumer
 }

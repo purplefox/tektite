@@ -414,7 +414,7 @@ func TestInvalidateListeners(t *testing.T) {
 		}
 	}
 
-	// Invalidate the first one by sending next resetSequence
+	// Invalidate the first one by sending next epoch
 	_, err := cl.RegisterTableListener(1000, 3, receivers[0].memberID, 1)
 	require.NoError(t, err)
 
