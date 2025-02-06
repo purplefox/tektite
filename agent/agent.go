@@ -126,7 +126,6 @@ func NewAgentWithFactories(cfg Conf, objStore objstore.Client, connectionFactory
 	if err != nil {
 		return nil, err
 	}
-	transportServer.RegisterHandler(transport.HandlerIDFetcherTableRegisteredNotification, bf.HandleTableRegisteredNotification)
 	agent.batchFetcher = bf
 	groupCoord, err := group.NewCoordinator(cfg.GroupCoordinatorConf, agent.topicMetaCache,
 		agent.controlClientCache, agent.connCaches, getter.get)

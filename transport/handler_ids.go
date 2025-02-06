@@ -4,7 +4,6 @@ const (
 	HandlerIDControllerRegisterL0Table = iota + 10
 	HandlerIDControllerApplyChanges
 	HandlerIDControllerQueryTablesInRange
-	HandlerIDControllerRegisterTableListener
 	HandlerIDControllerPrepush
 	HandlerIDControllerGetOffsetInfo
 	HandlerIDControllerPollForJob

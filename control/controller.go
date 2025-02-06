@@ -42,7 +42,6 @@ type Controller struct {
 	currentMembership          cluster.MembershipState
 	clusterState               []AgentMeta
 	clusterStateSameAZ         []AgentMeta
-	tableListeners             *tableListeners
 	groupCoordinatorController *CoordinatorController
 	aclManager                 *AclManager
 	tableGetter                sst.TableGetter
@@ -60,7 +59,6 @@ func NewController(cfg Conf, objStoreClient objstore.Client, connCaches *transpo
 		connCaches:             connCaches,
 		connFactory:            connFactory,
 		transportServer:        transportServer,
-		tableListeners:         newTableListeners(cfg.TableNotificationInterval, connCaches),
 		memberID:               -1,
 		activateClusterVersion: -1,
 	}
@@ -85,7 +83,6 @@ func (c *Controller) Start() error {
 	// Register the handlers
 	c.transportServer.RegisterHandler(transport.HandlerIDControllerRegisterL0Table, c.handleRegisterL0Table)
 	c.transportServer.RegisterHandler(transport.HandlerIDControllerApplyChanges, c.handleApplyChanges)
-	c.transportServer.RegisterHandler(transport.HandlerIDControllerRegisterTableListener, c.handleRegisterTableListener)
 	c.transportServer.RegisterHandler(transport.HandlerIDControllerQueryTablesInRange, c.handleQueryTablesInRange)
 	c.transportServer.RegisterHandler(transport.HandlerIDControllerPrepush, c.handlePrePush)
 	c.transportServer.RegisterHandler(transport.HandlerIDControllerGetOffsetInfo, c.handleGetOffsetInfo)
@@ -103,7 +100,6 @@ func (c *Controller) Start() error {
 	c.transportServer.RegisterHandler(transport.HandlerIDControllerCreateAcls, c.handleCreateAcls)
 	c.transportServer.RegisterHandler(transport.HandlerIDControllerDeleteAcls, c.handleDeleteAcls)
 	c.transportServer.RegisterHandler(transport.HandlerIDControllerListAcls, c.handleListAcls)
-	c.tableListeners.start()
 	c.started = true
 	return nil
 }
@@ -155,7 +151,6 @@ func (c *Controller) stop() error {
 		c.offsetsCache.Stop()
 		c.offsetsCache = nil
 	}
-	c.tableListeners.stop()
 	if c.sequences != nil {
 		c.sequences.Stop()
 		c.sequences = nil
@@ -242,7 +237,6 @@ func (c *Controller) MembershipChanged(thisMemberID int32, newState cluster.Memb
 	if c.topicMetaManager != nil {
 		c.topicMetaManager.MembershipChanged(newState)
 	}
-	c.tableListeners.membershipChanged(&newState)
 	c.groupCoordinatorController.MembershipChanged(&newState)
 	if c.memberID == -1 {
 		c.memberID = thisMemberID
@@ -301,16 +295,11 @@ func (c *Controller) handleRegisterL0Table(_ *transport.ConnectionContext, reque
 		if err != nil {
 			return responseWriter(nil, err)
 		}
-		offsetInfos, tableIDs, err := c.offsetsCache.MaybeReleaseOffsets(req.Sequence, req.RegEntry.TableID)
+		_, _, err = c.offsetsCache.MaybeReleaseOffsets(req.Sequence, req.RegEntry.TableID)
 		if err != nil {
 			// Send error back to caller
 			log.Warnf("failed to release offsets: %v", err)
 			return responseWriter(responseBuff, err)
-		}
-		if len(tableIDs) > 0 {
-			if err := c.tableListeners.sendTableRegisteredNotification(tableIDs, offsetInfos); err != nil {
-				return err
-			}
 		}
 		// Send back zero byte to represent nil OK response
 		responseBuff = append(responseBuff, 0)
@@ -337,43 +326,6 @@ func (c *Controller) handleApplyChanges(_ *transport.ConnectionContext, request 
 		responseBuff = append(responseBuff, 0)
 		return responseWriter(responseBuff, nil)
 	})
-}
-
-func (c *Controller) handleRegisterTableListener(_ *transport.ConnectionContext, request []byte, responseBuff []byte, responseWriter transport.ResponseWriter) error {
-	c.lock.RLock()
-	defer c.lock.RUnlock()
-	if !c.requestChecks(request, responseWriter) {
-		return nil
-	}
-	var req RegisterTableListenerRequest
-	req.Deserialize(request, 2)
-	if err := c.checkLeaderVersion(req.LeaderVersion); err != nil {
-		return responseWriter(nil, err)
-	}
-	lro, exists, err := c.offsetsCache.GetLastReadableOffset(req.TopicID, req.PartitionID)
-	if !exists {
-		err = common.NewTektiteErrorf(common.TopicDoesNotExist, "GetOffsetInfo: unknown topic: %d", req.TopicID)
-	}
-	if err != nil {
-		return responseWriter(nil, err)
-	}
-	var memberAddress string
-	for _, member := range c.currentMembership.Members {
-		if member.ID == req.MemberID {
-			var data common.MembershipData
-			data.Deserialize(member.Data, 0)
-			memberAddress = data.ClusterListenAddress
-		}
-	}
-	if memberAddress == "" {
-		return common.NewTektiteErrorf(common.Unavailable, "unable to register table listener - unknown cluster member %d", req.MemberID)
-	}
-	c.tableListeners.maybeRegisterListenerForPartition(req.MemberID, memberAddress, req.TopicID, req.PartitionID, req.ResetSequence)
-	resp := RegisterTableListenerResponse{
-		LastReadableOffset: lro,
-	}
-	responseBuff = resp.Serialize(responseBuff)
-	return responseWriter(responseBuff, nil)
 }
 
 func (c *Controller) handleQueryTablesInRange(_ *transport.ConnectionContext, request []byte, responseBuff []byte, responseWriter transport.ResponseWriter) error {

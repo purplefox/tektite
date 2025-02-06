@@ -138,18 +138,6 @@ func (c *clientWrapper) RegisterL0Table(sequence int64, regEntry lsm.Registratio
 	return err
 }
 
-func (c *clientWrapper) RegisterTableListener(topicID int, partitionID int, memberID int32,
-	resetSequence int64) (int64, error) {
-	if c.injectedError != nil {
-		return 0, c.injectedError
-	}
-	lro, err := c.client.RegisterTableListener(topicID, partitionID, memberID, resetSequence)
-	if err != nil {
-		c.closeConnection()
-	}
-	return lro, err
-}
-
 func (c *clientWrapper) GetOffsetInfos(infos []offsets.GetOffsetTopicInfo) ([]offsets.OffsetTopicInfo, error) {
 	if c.injectedError != nil {
 		return nil, c.injectedError

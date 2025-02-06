@@ -23,8 +23,6 @@ type Client interface {
 
 	QueryTablesInRange(keyStart []byte, keyEnd []byte) (lsm.OverlappingTables, error)
 
-	RegisterTableListener(topicID int, partitionID int, memberID int32, resetSequence int64) (int64, error)
-
 	PollForJob() (lsm.CompactionJob, error)
 
 	GetTopicInfo(topicName string) (topicmeta.TopicInfo, int, bool, error)
@@ -117,28 +115,6 @@ func (c *client) QueryTablesInRange(keyStart []byte, keyEnd []byte) (lsm.Overlap
 	}
 	queryRes, _ := lsm.DeserializeOverlappingTables(respBuff, 0)
 	return queryRes, nil
-}
-
-func (c *client) RegisterTableListener(topicID int, partitionID int, memberID int32, resetSequence int64) (int64, error) {
-	conn, err := c.getConnection()
-	if err != nil {
-		return 0, err
-	}
-	req := RegisterTableListenerRequest{
-		LeaderVersion: c.leaderVersion,
-		TopicID:       topicID,
-		PartitionID:   partitionID,
-		MemberID:      memberID,
-		ResetSequence: resetSequence,
-	}
-	request := req.Serialize(createRequestBuffer())
-	respBuff, err := conn.SendRPC(transport.HandlerIDControllerRegisterTableListener, request)
-	if err != nil {
-		return 0, err
-	}
-	var resp RegisterTableListenerResponse
-	resp.Deserialize(respBuff, 0)
-	return resp.LastReadableOffset, nil
 }
 
 func (c *client) PrePush(infos []offsets.GenerateOffsetTopicInfo, epochInfos []EpochInfo) ([]offsets.OffsetTopicInfo,
