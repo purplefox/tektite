@@ -19,13 +19,18 @@ import (
 func TestInLoop(t *testing.T) {
 	for i := 0; i < 100000; i++ {
 		log.Infof("iteration %d", i)
-		TestChaosSimple(t)
+		TestChaosSimpleFranz(t)
 	}
 }
 
-func TestChaosSimple(t *testing.T) {
-	testChaos(t, NewKafkaGoProducer, NewKafkaGoConsumer, false, false, 1, 2, 2,
-		10, 10, 10, 2, 2)
+func TestChaosSimpleKafkaGo(t *testing.T) {
+	testChaos(t, NewKafkaGoProducer, NewKafkaGoConsumer, false, false, 3, 1, 1,
+		100, 100, 1, 1, 2)
+}
+
+func TestChaosSimpleFranz(t *testing.T) {
+	testChaos(t, NewFranzProducer, NewFranzConsumer, false, false, 3, 1, 2,
+		10, 10, 10, 1, 2)
 }
 
 func testChaos(t *testing.T, producerFactory ProducerFactory, consumerFactory ConsumerFactory,
@@ -34,13 +39,16 @@ func testChaos(t *testing.T, producerFactory ProducerFactory, consumerFactory Co
 	numConsumerGroups int,
 	numConsumersPerGroup int) {
 
-	agents, tearDown := startAgents(t, numAgents, serverTls, clientTls, compress.CompressionTypeNone, compress.CompressionTypeLz4)
+	extraCommandLine := "--metadata-write-interval-ms=10 --data-write-interval-ms=10"
+
+	agents, tearDown := startAgentsWithExtraCommandLine(t, numAgents, serverTls, clientTls,
+		compress.CompressionTypeNone, compress.CompressionTypeLz4, extraCommandLine)
 	defer tearDown(t)
 
 	var topicNames []string
 	for i := 0; i < numTopics; i++ {
 		topicName := fmt.Sprintf("chaos-topic-%s", uuid.New().String())
-		createTopic(t, topicName, 100, agents[0].kafkaListenAddress, serverTls, clientTls)
+		createTopic(t, topicName, 10, agents[0].kafkaListenAddress, serverTls, clientTls)
 		topicNames = append(topicNames, topicName)
 	}
 
@@ -57,8 +65,15 @@ func testChaos(t *testing.T, producerFactory ProducerFactory, consumerFactory Co
 			producer:                producer,
 		})
 	}
+	defer func() {
+		for _, s := range senders {
+			err := s.stop()
+			require.NoError(t, err)
+		}
+	}()
 
 	consumerGroupMap := map[string][]*fetcher{}
+	var allFetchers []*fetcher
 	for i := 0; i < numConsumerGroups; i++ {
 		consumerGroup := fmt.Sprintf("consumer-group-%d", i)
 		var totCount int64
@@ -78,9 +93,17 @@ func testChaos(t *testing.T, producerFactory ProducerFactory, consumerFactory Co
 				totMessages: int64(numSenders * numBatches * numKeysPerTopic * numValuesPerKeyPerBatch),
 			}
 			fetchers = append(fetchers, f)
+			allFetchers = append(allFetchers, f)
 		}
 		consumerGroupMap[consumerGroup] = fetchers
 	}
+
+	defer func() {
+		for _, f := range allFetchers {
+			err := f.stop()
+			require.NoError(t, err)
+		}
+	}()
 
 	// Start the senders
 	for _, s := range senders {
@@ -100,11 +123,15 @@ func testChaos(t *testing.T, producerFactory ProducerFactory, consumerFactory Co
 		s.waitComplete()
 	}
 
+	log.Infof("senders complete")
+
 	for _, fetchers := range consumerGroupMap {
 		for _, f := range fetchers {
 			f.waitComplete()
 		}
 	}
+
+	log.Infof("fetchers complete")
 
 }
 
@@ -172,9 +199,11 @@ func (p *sender) loop() {
 			})
 		}
 		valueIndex += p.numValuesPerKeyPerBatch
+		start := time.Now()
 		if err := p.producer.Produce(topicProduces...); err != nil {
 			panic(fmt.Sprintf("produce failed: %v", err))
 		}
+		log.Infof("produce took %d ms", time.Now().Sub(start).Milliseconds())
 		log.Infof("sender sent batch")
 	}
 }
@@ -194,6 +223,10 @@ func (p *fetcher) start() {
 
 func (p *fetcher) waitComplete() {
 	p.stopWg.Wait()
+}
+
+func (p *fetcher) stop() error {
+	return p.consumer.Close()
 }
 
 func (p *fetcher) loop() {
@@ -230,7 +263,10 @@ func (p *fetcher) loop0() error {
 		if val != lastVal+1 {
 			return errors.Errorf("received key out of order expected %d got %d for key %s", lastVal+1, val, string(msg.Key))
 		}
-		atomic.AddInt64(p.totCount, 1)
+		cnt := atomic.AddInt64(p.totCount, 1)
+		if cnt%100 == 0 {
+			log.Infof("consumed %d msgs", cnt)
+		}
 	}
 	return nil
 }

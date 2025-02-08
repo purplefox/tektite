@@ -473,13 +473,13 @@ func mergePartitionInfos(offs1 []OffsetPartitionInfo, offs2 []OffsetPartitionInf
 	i2 := 0
 	for i1 < len(offs1) || i2 < len(offs2) {
 		var partitionID1 int
-		if i1 == len(offs1) {
+		if i1 >= len(offs1) {
 			partitionID1 = math.MaxInt
 		} else {
 			partitionID1 = offs1[i1].PartitionID
 		}
 		var partitionID2 int
-		if i2 == len(offs2) {
+		if i2 >= len(offs2) {
 			partitionID2 = math.MaxInt
 		} else {
 			partitionID2 = offs2[i2].PartitionID
@@ -491,8 +491,9 @@ func mergePartitionInfos(offs1 []OffsetPartitionInfo, offs2 []OffsetPartitionInf
 			infos3 = append(infos3, offs2[i2])
 			i2++
 		} else {
-			if offs2[i1].Offset > offs2[i2].Offset {
-				panic("later sequence should always have higher offset")
+			if offs1[i1].Offset > offs2[i2].Offset {
+				log.Errorf("offs1: %v\noffs2:%v", offs1, offs2)
+				panic(fmt.Sprintf("later sequence should always have higher offset. offs1: %v offs2:%v", offs1, offs2))
 			}
 			infos3 = append(infos3, OffsetPartitionInfo{
 				PartitionID: partitionID1,

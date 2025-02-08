@@ -118,6 +118,11 @@ func startMinioAndCreateBuckets(t *testing.T) (miniocl.Conf, *minio.MinioContain
 
 func startAgents(t *testing.T, numAgents int, serverTls bool, clientAuth bool, fetchCompression compress.CompressionType,
 	storageCompression compress.CompressionType) ([]*AgentProcess, func(*testing.T)) {
+	return startAgentsWithExtraCommandLine(t, numAgents, serverTls, clientAuth, fetchCompression, storageCompression, "")
+}
+
+func startAgentsWithExtraCommandLine(t *testing.T, numAgents int, serverTls bool, clientAuth bool, fetchCompression compress.CompressionType,
+	storageCompression compress.CompressionType, extraCommandLine string) ([]*AgentProcess, func(*testing.T)) {
 	minioCfg, minioContainer := startMinioAndCreateBuckets(t)
 
 	mgr := NewManager()
@@ -146,6 +151,9 @@ func startAgents(t *testing.T, numAgents int, serverTls bool, clientAuth bool, f
 			fmt.Sprintf("--fetch-compression-type=%s ", fetchCompression.String()) +
 			`--log-level=info`
 		commandLine += tlsConf
+		if extraCommandLine != "" {
+			commandLine += " " + extraCommandLine
+		}
 		log.Debugf("command line: %s", commandLine)
 		agent, err := mgr.StartAgent(commandLine, false)
 		require.NoError(t, err)

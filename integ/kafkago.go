@@ -5,7 +5,6 @@ import (
 	"github.com/spirit-labs/tektite/common"
 	"github.com/spirit-labs/tektite/compress"
 	"github.com/spirit-labs/tektite/kafka"
-	"strconv"
 	"time"
 )
 
@@ -19,8 +18,9 @@ func NewKafkaGoProducer(address string, tlsEnabled bool, serverCertFile string, 
 		"partitioner":        "murmur2_random", // This matches the default hash algorithm we use, and same as Java client
 		"bootstrap.servers":  address,
 		"acks":               "all",
-		"enable.idempotence": strconv.FormatBool(true),
+		"enable.idempotence": "true",
 		"compression.type":   compressionType.String(),
+		"linger.ms":          10,
 		//"debug":              "all",
 	}
 	if tlsEnabled {

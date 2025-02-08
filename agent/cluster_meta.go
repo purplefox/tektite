@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"errors"
 	"github.com/spirit-labs/tektite/acls"
 	auth "github.com/spirit-labs/tektite/auth2"
 	"github.com/spirit-labs/tektite/common"
@@ -104,7 +103,8 @@ func (a *Agent) getAgentsInSameAz(hdr *kafkaprotocol.RequestHeader) ([]control.A
 
 	clusterMetadata := a.controller.GetClusterMeta()
 	if len(clusterMetadata) == 0 {
-		return nil, errors.New("no cluster metadata available")
+		// Send back an unavailable so the client retries
+		return nil, common.NewTektiteErrorf(common.Unavailable, "no cluster metadata available")
 	}
 	// Find agents in same AZ
 	agents := getAgentsInAz(az, clusterMetadata)

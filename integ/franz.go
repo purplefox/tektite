@@ -3,6 +3,7 @@ package integ
 import (
 	"context"
 	"fmt"
+	"github.com/pkg/errors"
 	"github.com/spirit-labs/tektite/compress"
 	"github.com/spirit-labs/tektite/conf"
 	"github.com/spirit-labs/tektite/kafka"
@@ -49,11 +50,13 @@ func NewFranzProducer(address string, tlsEnabled bool, serverCertFile string, cl
 			kgo.SeedBrokers(address),
 			kgo.DialTLSConfig(goTls),
 			kgo.ProducerBatchCompression(compressionCodec),
+			kgo.ProducerLinger(10*time.Millisecond),
 		)
 	} else {
 		client, err = kgo.NewClient(
 			kgo.SeedBrokers(address),
 			kgo.ProducerBatchCompression(compressionCodec),
+			kgo.ProducerLinger(10*time.Millisecond),
 		)
 	}
 	if err != nil {
@@ -95,7 +98,7 @@ type FranzConsumer struct {
 
 func NewFranzConsumer(address string, groupID string, tlsEnabled bool, serverCertFile string,
 	clientCertFile string, clientPrivateKeyFile string) (Consumer, error) {
-	logger := kgo.BasicLogger(os.Stdout, kgo.LogLevelDebug, func() string {
+	logger := kgo.BasicLogger(os.Stdout, kgo.LogLevelInfo, func() string {
 		return ""
 	})
 
@@ -139,7 +142,12 @@ func (f *FranzConsumer) Subscribe(topicName string) error {
 func (f *FranzConsumer) Fetch(timeout time.Duration) (*kafka.Message, error) {
 	start := time.Now()
 	for {
-		fetches := f.client.PollRecords(context.Background(), 1)
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		fetches := f.client.PollRecords(ctx, 1)
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return nil, nil
+		}
 		if errs := fetches.Errors(); len(errs) > 0 {
 			return nil, errs[0].Err
 		}

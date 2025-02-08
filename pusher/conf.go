@@ -36,7 +36,7 @@ func (c *Conf) Validate() error {
 }
 
 const (
-	DefaultWriteTimeout                             = 10 * time.Millisecond
+	DefaultWriteTimeout                             = 200 * time.Millisecond
 	DefaultAvailabilityRetryInterval                = 1 * time.Second
 	DefaultBufferSizeMaxBytes                       = 4 * 1024 * 1024
 	DefaultDataFormat                               = common.DataFormatV1
