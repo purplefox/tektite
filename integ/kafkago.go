@@ -97,6 +97,10 @@ func (l *KafkaGoConsumer) Subscribe(topicName string) error {
 	return l.consumer.Subscribe(topicName, nil)
 }
 
+func (k *KafkaGoConsumer) FetchAll() ([]*kafka.Message, error) {
+	return nil, nil
+}
+
 func (k *KafkaGoConsumer) Fetch(timeout time.Duration) (*kafka.Message, error) {
 	msg, err := k.consumer.ReadMessage(timeout)
 	if err != nil {
@@ -122,6 +126,10 @@ func (k *KafkaGoConsumer) Fetch(timeout time.Duration) (*kafka.Message, error) {
 		})
 	}
 	return km, nil
+}
+
+func (k *KafkaGoConsumer) Commit() error {
+	panic("implement me")
 }
 
 func (k *KafkaGoConsumer) Close() error {

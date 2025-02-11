@@ -755,7 +755,7 @@ func (g *group) offsetCommit(authContext *auth.Context, transactional bool, req 
 				Key:   key,
 				Value: value,
 			})
-			log.Debugf("group %s topic %d partition %d committing offset %d", *req.GroupId, info.ID,
+			log.Infof("group %s topic %d partition %d committing offset %d", *req.GroupId, info.ID,
 				partitionData.PartitionIndex, offset)
 		}
 	}
@@ -995,6 +995,7 @@ func (g *group) offsetFetch(authContext *auth.Context, req *kafkaprotocol.Offset
 				continue
 			}
 			offset, err := g.loadOffset(topicInfo.ID, int(partitionID))
+			log.Infof("group offset fetch for partition %d -  returns offset %d", partitionID, offset)
 			if err != nil {
 				if common.IsUnavailableError(err) {
 					log.Warnf("failed to load offset %v", err)

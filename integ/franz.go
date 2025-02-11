@@ -3,7 +3,6 @@ package integ
 import (
 	"context"
 	"fmt"
-	"github.com/pkg/errors"
 	"github.com/spirit-labs/tektite/compress"
 	"github.com/spirit-labs/tektite/conf"
 	"github.com/spirit-labs/tektite/kafka"
@@ -93,12 +92,13 @@ func (f *FranzProducer) Close() error {
 }
 
 type FranzConsumer struct {
-	client *kgo.Client
+	client      *kgo.Client
+	uncommitted []*kgo.Record
 }
 
 func NewFranzConsumer(address string, groupID string, tlsEnabled bool, serverCertFile string,
 	clientCertFile string, clientPrivateKeyFile string) (Consumer, error) {
-	logger := kgo.BasicLogger(os.Stdout, kgo.LogLevelInfo, func() string {
+	logger := kgo.BasicLogger(os.Stdout, kgo.LogLevelDebug, func() string {
 		return ""
 	})
 
@@ -120,12 +120,16 @@ func NewFranzConsumer(address string, groupID string, tlsEnabled bool, serverCer
 			kgo.DialTLSConfig(goTls),
 			kgo.ConsumerGroup(groupID),
 			kgo.WithLogger(logger),
+			kgo.DisableAutoCommit(),
+			kgo.BlockRebalanceOnPoll(),
 		)
 	} else {
 		client, err = kgo.NewClient(
 			kgo.SeedBrokers(address),
 			kgo.ConsumerGroup(groupID),
 			kgo.WithLogger(logger),
+			kgo.DisableAutoCommit(),
+			kgo.BlockRebalanceOnPoll(),
 		)
 	}
 	if err != nil {
@@ -142,12 +146,13 @@ func (f *FranzConsumer) Subscribe(topicName string) error {
 func (f *FranzConsumer) Fetch(timeout time.Duration) (*kafka.Message, error) {
 	start := time.Now()
 	for {
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		defer cancel()
-		fetches := f.client.PollRecords(ctx, 1)
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return nil, nil
-		}
+		//ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		//defer cancel()
+		// context nil means non blocking
+		fetches := f.client.PollRecords(nil, 1)
+		//if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		//	return nil, nil
+		//}
 		if errs := fetches.Errors(); len(errs) > 0 {
 			return nil, errs[0].Err
 		}
@@ -178,8 +183,16 @@ func (f *FranzConsumer) Fetch(timeout time.Duration) (*kafka.Message, error) {
 				Value: hdr.Value,
 			})
 		}
+		f.uncommitted = append(f.uncommitted, rec)
 		return kMsg, nil
 	}
+}
+
+func (c *FranzConsumer) Commit() error {
+	c.client.MarkCommitRecords(c.uncommitted...)
+	c.uncommitted = c.uncommitted[:0]
+	c.client.AllowRebalance()
+	return nil
 }
 
 func (f *FranzConsumer) Close() error {

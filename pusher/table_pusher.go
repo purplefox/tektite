@@ -425,6 +425,14 @@ func (t *TablePusher) HandleProduceRequest(authContext *auth.Context, req *kafka
 						// Update CRC
 						kafkaencoding.CalcAndSetCrc(records)
 					}
+
+					//fixme
+					//log.Infof("tablepusher receiving batch")
+					//msgs := kafkaencoding.BatchToRawMessages(records)
+					//for _, msg := range msgs {
+					//	log.Infof("tablepusher received key %s val %s", string(msg.Key), string(msg.Value))
+					//}
+
 					topicMap[partitionID] = append(topicMap[partitionID], [][]byte{records})
 					t.sizeBytes += len(records)
 					if topicInfo.Compacted {
@@ -488,6 +496,7 @@ func (t *TablePusher) HandleProduceRequest(authContext *auth.Context, req *kafka
 			if err == nil {
 				return nil
 			}
+			log.Errorf("write returned err: %v", err)
 			// Close the client - it will be recreated on any retry
 			t.closeClient()
 			if !common.IsUnavailableError(err) {
@@ -657,7 +666,7 @@ func (t *TablePusher) handleError(err error) {
 	t.callCompletions(err)
 	t.reset()
 	// PartitionOutOfRange can occur if partition count is reduced but produced records for old partitions still in transit
-	// We don't want to stop inm that case
+	// We don't want to stop in that case
 	if !common.IsTektiteErrorWithCode(err, common.PartitionOutOfRange) {
 		// unexpected error - call all completions with error, and stop
 		log.Errorf("got unexpected error in table pusher, will stop. %v", err)
@@ -700,6 +709,7 @@ func (t *TablePusher) write() error {
 		// Nothing to do
 		return nil
 	}
+	log.Infof("%p tablepusher write called", t)
 	client, err := t.getClient()
 	if err != nil {
 		return err
@@ -728,13 +738,13 @@ func (t *TablePusher) write() error {
 	// offset to be got, and ordering the locks prevents deadlock between multiple pushers requesting offsets from
 	// same partitions.
 	if len(getOffSetInfos) > 1 {
-		slices.SortFunc(getOffSetInfos, func(a, b offsets.GenerateOffsetTopicInfo) int {
+		slices.SortStableFunc(getOffSetInfos, func(a, b offsets.GenerateOffsetTopicInfo) int {
 			return intCompare(a.TopicID, b.TopicID)
 		})
 	}
 	for _, topicInfo := range getOffSetInfos {
 		if len(topicInfo.PartitionInfos) > 1 {
-			slices.SortFunc(topicInfo.PartitionInfos, func(a, b offsets.GenerateOffsetPartitionInfo) int {
+			slices.SortStableFunc(topicInfo.PartitionInfos, func(a, b offsets.GenerateOffsetPartitionInfo) int {
 				return intCompare(a.PartitionID, b.PartitionID)
 			})
 		}
@@ -750,6 +760,7 @@ func (t *TablePusher) write() error {
 	// Now make the prePush call - this gets any offsets for topic data to be written and also provides epochs for
 	// the consumer groups of any offsets being committed - this allows them to be verified by the controller
 	// to prevent any zombie writes of offsets
+	// A sequence is returned - this sequence increments every time
 	offs, seq, epochsOK, err := client.PrePush(getOffSetInfos, groupEpochInfos)
 	if err != nil {
 		return err
@@ -835,13 +846,21 @@ func (t *TablePusher) write() error {
 						Key:   key,
 						Value: value,
 					})
+
+					//log.Infof("tablepusher receiving batch")
+					msgs := kafkaencoding.BatchToRawMessages(records)
+					for i, msg := range msgs {
+						log.Infof("%p tablepusher offset for key %s val %s is %d partition %d", t, string(msg.Key), string(msg.Value),
+							int(offset)+i, partInfo.PartitionID)
+					}
+
 					offset += int64(kafkaencoding.NumRecords(records))
 				}
 			}
 		}
 	}
 	// Sort by key - ssTables are always in key order
-	slices.SortFunc(kvs, func(a, b common.KV) int {
+	slices.SortStableFunc(kvs, func(a, b common.KV) int {
 		return bytes.Compare(a.Key, b.Key)
 	})
 	iter := common.NewKvSliceIterator(kvs)
@@ -875,6 +894,10 @@ func (t *TablePusher) write() error {
 		TableSize:        uint64(table.SizeBytes()),
 		NumPrefixDeletes: uint32(table.NumPrefixDeletes()),
 	}
+	// Important: We MUST use the same controller client instance in RegisterL0Table as we used in PrePush - this
+	// ensures the leader version in the client is the same for these two calls.
+	// If a membership change occurs on the controller between the two calls the register will be rejected.
+	log.Infof("%p table pusher attempting to push table %s", t, regEntry.TableID)
 	if err := client.RegisterL0Table(seq, regEntry); err != nil {
 		return err
 	}
@@ -883,7 +906,7 @@ func (t *TablePusher) write() error {
 	t.callCompletions(nil)
 	// reset - the state
 	t.reset()
-	//log.Infof("table pusher pushed table %s with keystart %v keyend %v", tableID, smallestKey, largestKey)
+	log.Infof("%p table pusher pushed table %s with keystart %v keyend %v", t, tableID, smallestKey, largestKey)
 	return nil
 }
 

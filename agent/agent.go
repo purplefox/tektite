@@ -217,11 +217,13 @@ func (a *Agent) Stop() error {
 	if !a.started {
 		return nil
 	}
+	// We must close conn caches and control caches first and incoming kafka requests might be waiting on response from outgoing rpcs
+	// these will need to return before the kafka server can close
+	a.connCaches.Close()
+	a.controlClientCache.Close()
 	if err := a.kafkaServer.Stop(); err != nil {
 		return err
 	}
-	a.controlClientCache.Close()
-	a.connCaches.Close()
 	if err := a.compactionWorkersService.Stop(); err != nil {
 		return err
 	}

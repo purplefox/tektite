@@ -84,6 +84,7 @@ func (c *Controller) Start() error {
 	c.transportServer.RegisterHandler(transport.HandlerIDControllerRegisterL0Table, c.handleRegisterL0Table)
 	c.transportServer.RegisterHandler(transport.HandlerIDControllerApplyChanges, c.handleApplyChanges)
 	c.transportServer.RegisterHandler(transport.HandlerIDControllerQueryTablesInRange, c.handleQueryTablesInRange)
+	c.transportServer.RegisterHandler(transport.HandlerIDControllerQueryTablesForPartition, c.handleQueryTablesForPartition)
 	c.transportServer.RegisterHandler(transport.HandlerIDControllerPrepush, c.handlePrePush)
 	c.transportServer.RegisterHandler(transport.HandlerIDControllerGetOffsetInfo, c.handleGetOffsetInfo)
 	c.transportServer.RegisterHandler(transport.HandlerIDControllerPollForJob, c.handlePollForJob)
@@ -229,10 +230,11 @@ func (c *Controller) MembershipChanged(thisMemberID int32, newState cluster.Memb
 			}
 		}
 	}
+	leaderChanged := c.currentMembership.LeaderVersion != newState.LeaderVersion
 	c.currentMembership = newState
 	c.updateClusterMeta(&newState)
-	if c.offsetsCache != nil {
-		c.offsetsCache.MembershipChanged()
+	if c.offsetsCache != nil && leaderChanged {
+		c.offsetsCache.LeaderChanged()
 	}
 	if c.topicMetaManager != nil {
 		c.topicMetaManager.MembershipChanged(newState)
@@ -285,6 +287,9 @@ func (c *Controller) handleRegisterL0Table(_ *transport.ConnectionContext, reque
 	}
 	var req RegisterL0Request
 	req.Deserialize(request, 2)
+	// If the sequence in the request was got before a membership change then the leader version in the request will
+	// be different to to the current leader version as we use the same client instance in table pusher for both the
+	// prePush and the registerL0Table call
 	if err := c.checkLeaderVersion(req.LeaderVersion); err != nil {
 		return responseWriter(nil, err)
 	}
@@ -343,6 +348,36 @@ func (c *Controller) handleQueryTablesInRange(_ *transport.ConnectionContext, re
 	if err != nil {
 		return responseWriter(nil, err)
 	}
+	responseBuff = res.Serialize(responseBuff)
+	return responseWriter(responseBuff, nil)
+}
+
+func (c *Controller) handleQueryTablesForPartition(_ *transport.ConnectionContext, request []byte, responseBuff []byte, responseWriter transport.ResponseWriter) error {
+	c.lock.RLock()
+	defer c.lock.RUnlock()
+	if !c.requestChecks(request, responseWriter) {
+		return nil
+	}
+	var req QueryTablesForPartitionRequest
+	req.Deserialize(request, 2)
+	if err := c.checkLeaderVersion(req.LeaderVersion); err != nil {
+		return responseWriter(nil, err)
+	}
+	queryRes, err := c.lsmHolder.QueryTablesInRange(req.KeyStart, req.KeyEnd)
+	if err != nil {
+		return responseWriter(nil, err)
+	}
+	var res QueryTablesForPartitionResponse
+	res.Overlapping = queryRes
+	lro, ok, err := c.offsetsCache.GetLastReadableOffset(req.TopicID, req.PartitionID)
+	if !ok {
+		err = common.NewTektiteErrorf(common.Unavailable, "cannot get lro - unknown topic/partition %d/%d",
+			req.TopicID, req.PartitionID)
+	}
+	if err != nil {
+		return responseWriter(nil, err)
+	}
+	res.LastReadableOffset = lro
 	responseBuff = res.Serialize(responseBuff)
 	return responseWriter(responseBuff, nil)
 }

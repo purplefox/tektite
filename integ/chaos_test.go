@@ -11,7 +11,6 @@ import (
 	"math/rand"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -30,7 +29,7 @@ func TestChaosSimpleKafkaGo(t *testing.T) {
 
 func TestChaosSimpleFranz(t *testing.T) {
 	testChaos(t, NewFranzProducer, NewFranzConsumer, false, false, 3, 1, 2,
-		10, 10, 10, 1, 2)
+		10, 10, 10, 1, 1)
 }
 
 func testChaos(t *testing.T, producerFactory ProducerFactory, consumerFactory ConsumerFactory,
@@ -72,12 +71,15 @@ func testChaos(t *testing.T, producerFactory ProducerFactory, consumerFactory Co
 		}
 	}()
 
-	consumerGroupMap := map[string][]*fetcher{}
-	var allFetchers []*fetcher
+	var fetchers []*fetcher
+	var groupStates []*consumerGroupState
 	for i := 0; i < numConsumerGroups; i++ {
 		consumerGroup := fmt.Sprintf("consumer-group-%d", i)
-		var totCount int64
-		var fetchers []*fetcher
+		groupState := &consumerGroupState{
+			lastKeysMap:  map[string]int{},
+			totToConsume: numSenders * numBatches * numKeysPerTopic * numValuesPerKeyPerBatch,
+		}
+		groupStates = append(groupStates, groupState)
 		for j := 0; j < numConsumersPerGroup; j++ {
 			bootStrapAddress := agents[rand.Intn(numAgents)].kafkaListenAddress
 			consumer := createConsumerForChaos(t, consumerFactory, bootStrapAddress, consumerGroup, serverTls, clientTls)
@@ -87,19 +89,16 @@ func testChaos(t *testing.T, producerFactory ProducerFactory, consumerFactory Co
 				require.NoError(t, err)
 			}
 			f := &fetcher{
-				consumer:    consumer,
-				stopWg:      sync.WaitGroup{},
-				totCount:    &totCount,
-				totMessages: int64(numSenders * numBatches * numKeysPerTopic * numValuesPerKeyPerBatch),
+				consumer:   consumer,
+				stopWg:     sync.WaitGroup{},
+				groupState: groupState,
 			}
 			fetchers = append(fetchers, f)
-			allFetchers = append(allFetchers, f)
 		}
-		consumerGroupMap[consumerGroup] = fetchers
 	}
 
 	defer func() {
-		for _, f := range allFetchers {
+		for _, f := range fetchers {
 			err := f.stop()
 			require.NoError(t, err)
 		}
@@ -111,11 +110,19 @@ func testChaos(t *testing.T, producerFactory ProducerFactory, consumerFactory Co
 	}
 
 	// Start the fetchers
-	for _, fetchers := range consumerGroupMap {
-		for _, f := range fetchers {
-			f.start()
-		}
+	for _, f := range fetchers {
+		f.start()
 	}
+
+	for _, gs := range groupStates {
+		gs.startLogger()
+	}
+
+	defer func() {
+		for _, gs := range groupStates {
+			gs.stopTimer()
+		}
+	}()
 
 	log.Infof("waiting for complete")
 
@@ -125,14 +132,11 @@ func testChaos(t *testing.T, producerFactory ProducerFactory, consumerFactory Co
 
 	log.Infof("senders complete")
 
-	for _, fetchers := range consumerGroupMap {
-		for _, f := range fetchers {
-			f.waitComplete()
-		}
+	for _, f := range fetchers {
+		f.waitComplete()
 	}
 
 	log.Infof("fetchers complete")
-
 }
 
 func createConsumerForChaos(t *testing.T, factory ConsumerFactory, address string, groupID string,
@@ -209,11 +213,10 @@ func (p *sender) loop() {
 }
 
 type fetcher struct {
-	lock        sync.Mutex
-	consumer    Consumer
-	totCount    *int64
-	totMessages int64
-	stopWg      sync.WaitGroup
+	lock       sync.Mutex
+	consumer   Consumer
+	stopWg     sync.WaitGroup
+	groupState *consumerGroupState
 }
 
 func (p *fetcher) start() {
@@ -235,12 +238,70 @@ func (p *fetcher) loop() {
 	}
 }
 
+type consumerGroupState struct {
+	lock          sync.Mutex
+	lastKeysMap   map[string]int
+	consumedCount int
+	totToConsume  int
+	logTimer      *time.Timer
+}
+
+func (c *consumerGroupState) finished() bool {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	return c.consumedCount >= c.totToConsume
+}
+
+func (c *consumerGroupState) startLogger() {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	c.scheduleLogTimer()
+}
+
+func (c *consumerGroupState) stopTimer() {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	c.logTimer.Stop()
+}
+
+func (c *consumerGroupState) scheduleLogTimer() {
+	c.logTimer = time.AfterFunc(5*time.Second, func() {
+		c.lock.Lock()
+		defer c.lock.Unlock()
+		for sKey, val := range c.lastKeysMap {
+			log.Infof("last key: %s, val: %d", sKey, val)
+		}
+		c.scheduleLogTimer()
+	})
+}
+
+func (c *consumerGroupState) consumed(msg *kafka.Message) error {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	sKey := string(msg.Key)
+	lastVal, ok := c.lastKeysMap[sKey]
+	if !ok {
+		lastVal = -1
+	}
+	val, err := strconv.Atoi(string(msg.Value)[6:])
+	if err != nil {
+		return err
+	}
+	c.lastKeysMap[sKey] = val
+	if val != lastVal+1 {
+		return errors.Errorf("%p partition %d offset %d received key out of order expected %d got %d for key %s",
+			c, msg.PartInfo.PartitionID, msg.PartInfo.Offset, lastVal+1, val, string(msg.Key))
+	}
+	c.consumedCount++
+	//log.Infof("consumed count is now %d", c.consumedCount)
+	return nil
+}
+
 func (p *fetcher) loop0() error {
 	p.lock.Lock()
 	defer p.lock.Unlock()
 	defer p.stopWg.Done()
-	lastKeysMap := map[string]int{}
-	for atomic.LoadInt64(p.totCount) < p.totMessages {
+	for !p.groupState.finished() {
 		msg, err := p.consumer.Fetch(500 * time.Millisecond)
 		if err != nil {
 			return err
@@ -248,24 +309,13 @@ func (p *fetcher) loop0() error {
 		if msg == nil {
 			continue
 		}
-		sKey := string(msg.Key)
-		lastVal, ok := lastKeysMap[sKey]
-		if !ok {
-			lastVal = -1
-		}
-		val, err := strconv.Atoi(string(msg.Value)[6:])
-		if err != nil {
+		//log.Infof("%p got key %s val %d partition %d offset %d", p, string(msg.Key), string(msg.Value),
+		//	msg.PartInfo.PartitionID, msg.PartInfo.Offset)
+		if err := p.groupState.consumed(msg); err != nil {
 			return err
 		}
-		lastKeysMap[sKey] = val
-		//log.Infof("got key %s val %d lastVal %d partition %d offset %d", sKey, val, lastVal,
-		//	msg.PartInfo.PartitionID, msg.PartInfo.Offset)
-		if val != lastVal+1 {
-			return errors.Errorf("received key out of order expected %d got %d for key %s", lastVal+1, val, string(msg.Key))
-		}
-		cnt := atomic.AddInt64(p.totCount, 1)
-		if cnt%100 == 0 {
-			log.Infof("consumed %d msgs", cnt)
+		if err := p.consumer.Commit(); err != nil {
+			return err
 		}
 	}
 	return nil

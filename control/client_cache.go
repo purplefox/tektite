@@ -160,6 +160,17 @@ func (c *clientWrapper) QueryTablesInRange(keyStart []byte, keyEnd []byte) (lsm.
 	return queryRes, err
 }
 
+func (c *clientWrapper) QueryTablesForPartition(topicID int, partitionID int, keyStart []byte, keyEnd []byte) (lsm.OverlappingTables, int64, error) {
+	if c.injectedError != nil {
+		return nil, 0, c.injectedError
+	}
+	queryRes, lro, err := c.client.QueryTablesForPartition(topicID, partitionID, keyStart, keyEnd)
+	if err != nil {
+		c.closeConnection()
+	}
+	return queryRes, lro, err
+}
+
 func (c *clientWrapper) PollForJob() (lsm.CompactionJob, error) {
 	if c.injectedError != nil {
 		return lsm.CompactionJob{}, c.injectedError

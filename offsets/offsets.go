@@ -14,6 +14,7 @@ import (
 	"github.com/spirit-labs/tektite/sst"
 	"github.com/spirit-labs/tektite/topicmeta"
 	"math"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -48,21 +49,20 @@ lowestAcceptableSequence which is updated to be current sequence at the point of
 When MaybeReleaseOffsets is called we reject any attempts where the offset is less than this value.
 */
 type Cache struct {
-	lock                     sync.RWMutex
-	started                  bool
-	topicOffsets             map[int][]partitionOffsets
-	topicMetaProvider        topicMetaProvider
-	querier                  querier
-	partitionHashes          *parthash.PartitionHashes
-	objStore                 objstore.Client
-	dataBucketName           string
-	stopping                 atomic.Bool
-	offsetsSeq               int64
-	reorderLock              sync.Mutex
-	offsHeap                 seqHeap
-	offsetsMap               map[int64][]OffsetTopicInfo
-	lastReleasedSequence     int64
-	lowestAcceptableSequence int64
+	lock                 sync.RWMutex
+	started              bool
+	topicOffsets         map[int][]partitionOffsets
+	topicMetaProvider    topicMetaProvider
+	querier              querier
+	partitionHashes      *parthash.PartitionHashes
+	objStore             objstore.Client
+	dataBucketName       string
+	stopping             atomic.Bool
+	offsetsSeq           int64
+	reorderLock          sync.Mutex
+	offsHeap             seqHeap
+	offsetsMap           map[int64][]OffsetTopicInfo
+	lastReleasedSequence int64
 }
 
 type topicMetaProvider interface {
@@ -153,18 +153,20 @@ func (c *Cache) GenerateOffsets(infos []GenerateOffsetTopicInfo) ([]OffsetTopicI
 	if !c.started {
 		return nil, 0, errors.New("offsets cache not started")
 	}
-	res, seq, err := c.generateOffsets0(infos)
+	res, err := c.generateOffsets0(infos)
 	if err != nil {
 		return nil, 0, err
 	}
 	// reorderLock must be taken after partition locks have been unlocked, to avoid deadlock
 	c.reorderLock.Lock()
 	defer c.reorderLock.Unlock()
-	c.offsetsMap[seq] = res
-	return res, seq, nil
+	c.offsetsSeq++ // sequence must start at 1 as initial lastReleasedSequence is 0
+	c.offsetsMap[c.offsetsSeq] = res
+	log.Infof("%p returning sequence %d", c, c.offsetsSeq)
+	return res, c.offsetsSeq, nil
 }
 
-func (c *Cache) generateOffsets0(infos []GenerateOffsetTopicInfo) ([]OffsetTopicInfo, int64, error) {
+func (c *Cache) generateOffsets0(infos []GenerateOffsetTopicInfo) ([]OffsetTopicInfo, error) {
 	// First we gather all the partition offsets, and obtain all the locks before we get any offsets. This is
 	// essential to ensure that all offsets got for a particular sequence are higher than offsets got for a lower
 	// sequence. We need this guarantee so that when we re-order registrations in sequence order we only output
@@ -180,10 +182,10 @@ func (c *Cache) generateOffsets0(infos []GenerateOffsetTopicInfo) ([]OffsetTopic
 	for _, topicInfo := range infos {
 		topicOffsets, exists, err := c.getTopicOffsets(topicInfo.TopicID)
 		if err != nil {
-			return nil, 0, err
+			return nil, err
 		}
 		if !exists {
-			return nil, 0, common.NewTektiteErrorf(common.TopicDoesNotExist, "generate offsets: unknown topic: %d", topicInfo.TopicID)
+			return nil, common.NewTektiteErrorf(common.TopicDoesNotExist, "generate offsets: unknown topic: %d", topicInfo.TopicID)
 		}
 		for _, partitionInfo := range topicInfo.PartitionInfos {
 			if partitionInfo.NumOffsets < 1 {
@@ -191,15 +193,13 @@ func (c *Cache) generateOffsets0(infos []GenerateOffsetTopicInfo) ([]OffsetTopic
 				panic(fmt.Sprintf("invalid value for NumOffsets: %d", partitionInfo.NumOffsets))
 			}
 			if err := checkPartitionOffsetInRange(partitionInfo.PartitionID, len(topicOffsets)); err != nil {
-				return nil, 0, err
+				return nil, err
 			}
 			partitionOff := &topicOffsets[partitionInfo.PartitionID]
 			partitionOff.lock.Lock()
 			partOffs = append(partOffs, partitionOff)
 		}
 	}
-	// Get a sequence value
-	seq := atomic.AddInt64(&c.offsetsSeq, 1)
 	// Now we can get the actual offsets
 	offInfos := make([]OffsetTopicInfo, len(infos))
 	index := 0
@@ -213,7 +213,7 @@ func (c *Cache) generateOffsets0(infos []GenerateOffsetTopicInfo) ([]OffsetTopic
 			index++
 			offset, err := partOff.getNextOffset(partitionInfo.NumOffsets, topicInfo.TopicID, partitionInfo.PartitionID, c)
 			if err != nil {
-				return nil, 0, err
+				return nil, err
 			}
 			topicOffInfo.PartitionInfos[j] = OffsetPartitionInfo{
 				PartitionID: partitionInfo.PartitionID,
@@ -222,7 +222,7 @@ func (c *Cache) generateOffsets0(infos []GenerateOffsetTopicInfo) ([]OffsetTopic
 		}
 		offInfos[i] = topicOffInfo
 	}
-	return offInfos, seq, nil
+	return offInfos, nil
 }
 
 func (c *Cache) GetLastReadableOffset(topicID int, partitionID int) (int64, bool, error) {
@@ -282,21 +282,19 @@ func (c *Cache) ResizePartitionCount(topicID, partitionCount int) (bool, error) 
 	return true, nil
 }
 
-func (c *Cache) MembershipChanged() {
+func (c *Cache) LeaderChanged() {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	if !c.started {
 		return
 	}
-	// membership has changed so it's possible an agent has failed and it might have gotten offsets which will never
-	// have a table registered for. in this case we tell each offset that membership changed so they can update
-	// their last readable, and we also set lowestAcceptable offset to be last offset sequence + 1so we can reject any
-	// attempts to release offsets for sequences below this.
-	seq := atomic.LoadInt64(&c.offsetsSeq)
-	atomic.StoreInt64(&c.lowestAcceptableSequence, seq+1)
+	log.Infof("%p cache membership changed", c)
+	// leader has changed so we will need get any tables registered for sequences got before this change as those
+	// calls will be rejected by the leader version check in controller.
+	// so we need to tell each offset to update last readable offset to highest offset and reset the heap
 	for _, offsets := range c.topicOffsets {
 		for i := 0; i < len(offsets); i++ {
-			offsets[i].clusterVersionChanged()
+			offsets[i].leaderChanged()
 		}
 	}
 	c.reorderLock.Lock()
@@ -304,7 +302,7 @@ func (c *Cache) MembershipChanged() {
 	// reset any unordered tables waiting to be released
 	c.offsetsMap = map[int64][]OffsetTopicInfo{}
 	c.offsHeap = nil
-	c.lastReleasedSequence = seq
+	c.lastReleasedSequence = c.offsetsSeq
 }
 
 func (c *Cache) loadTopicInfo(topicID int) ([]partitionOffsets, bool, error) {
@@ -360,11 +358,7 @@ func (c *Cache) MaybeReleaseOffsets(sequence int64, sstableID sst.SSTableID) ([]
 	if !c.started {
 		return nil, nil, errors.New("offsets cache not started")
 	}
-	lowestAcceptable := atomic.LoadInt64(&c.lowestAcceptableSequence)
-	if sequence < lowestAcceptable {
-		// attempt to release offsets came in for a sequence that was gotten before membership change
-		return nil, nil, common.NewTektiteErrorf(common.Unavailable, "cannot release offsets - membership change has occurred")
-	}
+	log.Infof("%p maybereleaseoffsets %d lastreleased %d len heap %d", c, sequence, c.lastReleasedSequence, len(c.offsHeap))
 	c.reorderLock.Lock()
 	defer c.reorderLock.Unlock()
 	var infos []OffsetTopicInfo
@@ -409,10 +403,23 @@ func (c *Cache) MaybeReleaseOffsets(sequence int64, sstableID sst.SSTableID) ([]
 	if err := c.updateLastReadable(infos); err != nil {
 		return nil, nil, err
 	}
+	if len(c.offsHeap) > 0 {
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("%p after mayberelease last seq %d tables in heap: ", c, c.lastReleasedSequence))
+		for _, holder := range c.offsHeap {
+			sb.WriteString(fmt.Sprintf("seq:%d table:%s ", holder.seq, holder.tableID))
+		}
+		log.Infof("%p after mayberelease last seq %d tables in heap: %s", c, c.lastReleasedSequence, sb.String())
+	} else {
+		log.Infof("%p after mayberelease last seq %d heap is: %v", c, c.lastReleasedSequence, c.offsHeap)
+	}
 	return infos, tableIDs, nil
 }
 
 func (c *Cache) updateLastReadable(infos []OffsetTopicInfo) error {
+	if len(infos) == 0 {
+		log.Infof("no lros to update")
+	}
 	for _, topicInfo := range infos {
 		offs, exists, err := c.getTopicOffsets(topicInfo.TopicID)
 		if err != nil {
@@ -422,8 +429,8 @@ func (c *Cache) updateLastReadable(infos []OffsetTopicInfo) error {
 			log.Warnf("updateLastReadable - unknown topic id %d", topicInfo.TopicID)
 		} else {
 			for _, partInfo := range topicInfo.PartitionInfos {
+				log.Infof("setting lro for topic %d partition %d to %d", topicInfo.TopicID, partInfo.PartitionID, partInfo.Offset)
 				offs[partInfo.PartitionID].setLastReadableOffset(partInfo.Offset)
-				log.Debugf("setting lro for topic %d partition %d to %d", topicInfo.TopicID, partInfo.PartitionID, partInfo.Offset)
 			}
 		}
 	}
@@ -595,7 +602,7 @@ type partitionOffsets struct {
 	loaded             bool
 }
 
-func (p *partitionOffsets) clusterVersionChanged() {
+func (p *partitionOffsets) leaderChanged() {
 	p.lock.Lock()
 	defer p.lock.Unlock()
 	p.lastReadableOffset = p.nextWriteOffset - 1

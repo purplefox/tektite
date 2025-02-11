@@ -175,6 +175,7 @@ func CreateConfFromCommandConf(commandConf CommandConf) (Conf, error) {
 		return Conf{}, errors.Errorf("invalid pusher-buffer-max-size-bytes: %d", commandConf.PusherBufferMaxSizeBytes)
 	}
 	cfg.PusherConf.BufferMaxSizeBytes = commandConf.PusherBufferMaxSizeBytes
+
 	return cfg, nil
 }
 

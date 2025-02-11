@@ -15,13 +15,15 @@ type Client interface {
 	PrePush(infos []offsets.GenerateOffsetTopicInfo, epochInfos []EpochInfo) ([]offsets.OffsetTopicInfo, int64,
 		[]bool, error)
 
+	RegisterL0Table(sequence int64, regEntry lsm.RegistrationEntry) error
+
 	GetOffsetInfos(infos []offsets.GetOffsetTopicInfo) ([]offsets.OffsetTopicInfo, error)
 
 	ApplyLsmChanges(regBatch lsm.RegistrationBatch) error
 
-	RegisterL0Table(sequence int64, regEntry lsm.RegistrationEntry) error
-
 	QueryTablesInRange(keyStart []byte, keyEnd []byte) (lsm.OverlappingTables, error)
+
+	QueryTablesForPartition(topicID int, partitionID int, keyStart []byte, keyEnd []byte) (lsm.OverlappingTables, int64, error)
 
 	PollForJob() (lsm.CompactionJob, error)
 
@@ -115,6 +117,28 @@ func (c *client) QueryTablesInRange(keyStart []byte, keyEnd []byte) (lsm.Overlap
 	}
 	queryRes, _ := lsm.DeserializeOverlappingTables(respBuff, 0)
 	return queryRes, nil
+}
+
+func (c *client) QueryTablesForPartition(topicID int, partitionID int, keyStart []byte, keyEnd []byte) (lsm.OverlappingTables, int64, error) {
+	conn, err := c.getConnection()
+	if err != nil {
+		return nil, 0, err
+	}
+	req := QueryTablesForPartitionRequest{
+		LeaderVersion: c.leaderVersion,
+		TopicID:       topicID,
+		PartitionID:   partitionID,
+		KeyStart:      keyStart,
+		KeyEnd:        keyEnd,
+	}
+	request := req.Serialize(createRequestBuffer())
+	respBuff, err := conn.SendRPC(transport.HandlerIDControllerQueryTablesForPartition, request)
+	if err != nil {
+		return nil, 0, err
+	}
+	var res QueryTablesForPartitionResponse
+	res.Deserialize(respBuff, 0)
+	return res.Overlapping, res.LastReadableOffset, nil
 }
 
 func (c *client) PrePush(infos []offsets.GenerateOffsetTopicInfo, epochInfos []EpochInfo) ([]offsets.OffsetTopicInfo,

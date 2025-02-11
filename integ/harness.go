@@ -239,6 +239,7 @@ type ConsumerFactory func(address string, groupID string, tlsEnabled bool, serve
 type Consumer interface {
 	Fetch(timeout time.Duration) (*kafka.Message, error)
 	Subscribe(topicName string) error
+	Commit() error
 	Close() error
 }
 

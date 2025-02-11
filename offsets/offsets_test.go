@@ -379,7 +379,7 @@ func TestMembershipChanged(t *testing.T) {
 	require.Equal(t, 3456, int(highestReadable))
 
 	// Membership change should trigger reset of highestReadable to be nextOffset - 1
-	oc.MembershipChanged()
+	oc.LeaderChanged()
 
 	highestReadable, exists, err = oc.GetLastReadableOffset(7, 1)
 	require.NoError(t, err)
