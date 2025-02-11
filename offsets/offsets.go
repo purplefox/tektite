@@ -153,20 +153,19 @@ func (c *Cache) GenerateOffsets(infos []GenerateOffsetTopicInfo) ([]OffsetTopicI
 	if !c.started {
 		return nil, 0, errors.New("offsets cache not started")
 	}
-	res, err := c.generateOffsets0(infos)
+	res, seq, err := c.generateOffsets0(infos)
 	if err != nil {
 		return nil, 0, err
 	}
 	// reorderLock must be taken after partition locks have been unlocked, to avoid deadlock
 	c.reorderLock.Lock()
 	defer c.reorderLock.Unlock()
-	c.offsetsSeq++ // sequence must start at 1 as initial lastReleasedSequence is 0
-	c.offsetsMap[c.offsetsSeq] = res
-	log.Infof("%p returning sequence %d", c, c.offsetsSeq)
-	return res, c.offsetsSeq, nil
+	c.offsetsMap[seq] = res
+	log.Infof("%p returning sequence %d", c, seq)
+	return res, seq, nil
 }
 
-func (c *Cache) generateOffsets0(infos []GenerateOffsetTopicInfo) ([]OffsetTopicInfo, error) {
+func (c *Cache) generateOffsets0(infos []GenerateOffsetTopicInfo) ([]OffsetTopicInfo, int64, error) {
 	// First we gather all the partition offsets, and obtain all the locks before we get any offsets. This is
 	// essential to ensure that all offsets got for a particular sequence are higher than offsets got for a lower
 	// sequence. We need this guarantee so that when we re-order registrations in sequence order we only output
@@ -182,10 +181,10 @@ func (c *Cache) generateOffsets0(infos []GenerateOffsetTopicInfo) ([]OffsetTopic
 	for _, topicInfo := range infos {
 		topicOffsets, exists, err := c.getTopicOffsets(topicInfo.TopicID)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		if !exists {
-			return nil, common.NewTektiteErrorf(common.TopicDoesNotExist, "generate offsets: unknown topic: %d", topicInfo.TopicID)
+			return nil, 0, common.NewTektiteErrorf(common.TopicDoesNotExist, "generate offsets: unknown topic: %d", topicInfo.TopicID)
 		}
 		for _, partitionInfo := range topicInfo.PartitionInfos {
 			if partitionInfo.NumOffsets < 1 {
@@ -193,7 +192,7 @@ func (c *Cache) generateOffsets0(infos []GenerateOffsetTopicInfo) ([]OffsetTopic
 				panic(fmt.Sprintf("invalid value for NumOffsets: %d", partitionInfo.NumOffsets))
 			}
 			if err := checkPartitionOffsetInRange(partitionInfo.PartitionID, len(topicOffsets)); err != nil {
-				return nil, err
+				return nil, 0, err
 			}
 			partitionOff := &topicOffsets[partitionInfo.PartitionID]
 			partitionOff.lock.Lock()
@@ -213,7 +212,7 @@ func (c *Cache) generateOffsets0(infos []GenerateOffsetTopicInfo) ([]OffsetTopic
 			index++
 			offset, err := partOff.getNextOffset(partitionInfo.NumOffsets, topicInfo.TopicID, partitionInfo.PartitionID, c)
 			if err != nil {
-				return nil, err
+				return nil, 0, err
 			}
 			topicOffInfo.PartitionInfos[j] = OffsetPartitionInfo{
 				PartitionID: partitionInfo.PartitionID,
@@ -222,7 +221,9 @@ func (c *Cache) generateOffsets0(infos []GenerateOffsetTopicInfo) ([]OffsetTopic
 		}
 		offInfos[i] = topicOffInfo
 	}
-	return offInfos, nil
+	// We must get the sequence with the partition locks held
+	seq := atomic.AddInt64(&c.offsetsSeq, 1) // sequence must start at 1 as initial lastReleasedSequence is 0
+	return offInfos, seq, nil
 }
 
 func (c *Cache) GetLastReadableOffset(topicID int, partitionID int) (int64, bool, error) {
@@ -302,7 +303,7 @@ func (c *Cache) LeaderChanged() {
 	// reset any unordered tables waiting to be released
 	c.offsetsMap = map[int64][]OffsetTopicInfo{}
 	c.offsHeap = nil
-	c.lastReleasedSequence = c.offsetsSeq
+	c.lastReleasedSequence = atomic.LoadInt64(&c.offsetsSeq)
 }
 
 func (c *Cache) loadTopicInfo(topicID int) ([]partitionOffsets, bool, error) {

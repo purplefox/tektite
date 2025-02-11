@@ -897,15 +897,21 @@ func (t *TablePusher) write() error {
 	// Important: We MUST use the same controller client instance in RegisterL0Table as we used in PrePush - this
 	// ensures the leader version in the client is the same for these two calls.
 	// If a membership change occurs on the controller between the two calls the register will be rejected.
+	//tz := time.AfterFunc(5*time.Second, func() {
+	//	log.Errorf("*** PUSH TIMEDOUT")
+	//	common.DumpStacks()
+	//})
 	log.Infof("%p table pusher attempting to push table %s", t, regEntry.TableID)
 	if err := client.RegisterL0Table(seq, regEntry); err != nil {
 		return err
 	}
+	log.Infof("%p registerl0table returned ok", t)
 	t.updateOffsetTimes()
 	// Send back completions
 	t.callCompletions(nil)
 	// reset - the state
 	t.reset()
+	//tz.Stop()
 	log.Infof("%p table pusher pushed table %s with keystart %v keyend %v", t, tableID, smallestKey, largestKey)
 	return nil
 }

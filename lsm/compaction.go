@@ -55,26 +55,25 @@ func (lr *lockedRange) overlaps(rng *lockedRange) bool {
 }
 
 func (m *Manager) maybeScheduleCompaction() error {
-	return nil
-	//// Get a level to compact (if any)
-	//level, numTables := m.chooseLevelToCompact()
-	//if level == -1 {
-	//	if log.DebugEnabled {
-	//		m.dumpLevelInfo()
-	//	}
-	//	// nothing to do
-	//	return nil
-	//}
-	//tables, err := m.chooseTablesToCompact(level, numTables)
-	//if err != nil {
-	//	return err
-	//}
-	//log.Debugf("in maybeScheduleCompaction - chose level %d num tables to compact: %d", level, len(tables))
-	//if len(tables) == 0 {
-	//	return nil
-	//}
-	//_, _, err = m.scheduleCompaction(level, tables, nil)
-	//return err
+	// Get a level to compact (if any)
+	level, numTables := m.chooseLevelToCompact()
+	if level == -1 {
+		if log.DebugEnabled {
+			m.dumpLevelInfo()
+		}
+		// nothing to do
+		return nil
+	}
+	tables, err := m.chooseTablesToCompact(level, numTables)
+	if err != nil {
+		return err
+	}
+	log.Debugf("in maybeScheduleCompaction - chose level %d num tables to compact: %d", level, len(tables))
+	if len(tables) == 0 {
+		return nil
+	}
+	_, _, err = m.scheduleCompaction(level, tables, nil)
+	return err
 }
 
 func (m *Manager) getAllL0Tables() ([][]*TableEntry, error) {

@@ -282,7 +282,7 @@ func (p *PartitionFetchState) read() (wouldExceedRequestMax bool, wouldExceedPar
 			return false, false, err
 		}
 		if !ok {
-			log.Errorf("%p iterating batches no more data", p)
+			log.Infof("%p iterating batches no more data", p)
 			break
 		}
 		// The sstable can contain record batches for other partitions - we filter those out
