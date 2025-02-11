@@ -68,7 +68,6 @@ func (c *Conf) Validate() error {
 
 func NewManager(objStore objstore.Client, l0FreeCallback func(), enableCompaction bool, validateOnEachStateChange bool,
 	opts Conf) *Manager {
-	opts.L0MaxTablesBeforeBlocking = 100000000
 	lm := &Manager{
 		compactionState:           newCompactionState(),
 		objStore:                  objStore,
