@@ -968,8 +968,10 @@ func (g *group) loadOffset(topicID int, partitionID int) (int64, error) {
 }
 
 func (g *group) offsetFetch(authContext *auth.Context, req *kafkaprotocol.OffsetFetchRequest, resp *kafkaprotocol.OffsetFetchResponse) {
+	log.Infof("group %s OffsetFetch before lock %v", g.id, req)
 	g.lock.Lock()
 	defer g.lock.Unlock()
+	log.Infof("group %s OffsetFetch after lock", g.id)
 	for i, topicData := range req.Topics {
 		topicName := common.SafeDerefStringPtr(topicData.Name)
 		topicInfo, foundTopic, err := g.gc.topicProvider.GetTopicInfo(topicName)

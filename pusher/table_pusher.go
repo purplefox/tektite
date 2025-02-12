@@ -765,6 +765,7 @@ func (t *TablePusher) write() error {
 	if err != nil {
 		return err
 	}
+	log.Infof("%p table pusher prePush returned sequence %d", t, seq)
 	if len(offs) != len(getOffSetInfos) {
 		panic("invalid offsets returned")
 	}
@@ -846,14 +847,12 @@ func (t *TablePusher) write() error {
 						Key:   key,
 						Value: value,
 					})
-
 					//log.Infof("tablepusher receiving batch")
 					msgs := kafkaencoding.BatchToRawMessages(records)
 					for i, msg := range msgs {
 						log.Infof("%p tablepusher offset for key %s val %s is %d partition %d", t, string(msg.Key), string(msg.Value),
 							int(offset)+i, partInfo.PartitionID)
 					}
-
 					offset += int64(kafkaencoding.NumRecords(records))
 				}
 			}
@@ -901,7 +900,7 @@ func (t *TablePusher) write() error {
 	//	log.Errorf("*** PUSH TIMEDOUT")
 	//	common.DumpStacks()
 	//})
-	log.Infof("%p table pusher attempting to push table %s", t, regEntry.TableID)
+	log.Infof("%p table pusher attempting to push table %s with seq %d", t, regEntry.TableID, seq)
 	if err := client.RegisterL0Table(seq, regEntry); err != nil {
 		return err
 	}

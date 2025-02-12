@@ -296,12 +296,14 @@ func (c *Controller) handleRegisterL0Table(_ *transport.ConnectionContext, reque
 	regBatch := lsm.RegistrationBatch{
 		Registrations: []lsm.RegistrationEntry{req.RegEntry},
 	}
-	log.Infof("%p controlller in handleRegisterL0Table about to call ApplyLsmChanges", c)
+	log.Infof("%p controlller in handleRegisterL0Table about to call ApplyLsmChanges sequence %d", c, req.Sequence)
 	return c.lsmHolder.ApplyLsmChanges(regBatch, func(err error) error {
+		log.Infof("%p in controller after ApplyLsmChanges sequence %d", c, req.Sequence)
 		if err != nil {
+			log.Infof("%p in controller after ApplyLsmChanges sequence %d - returned err", c, req.Sequence, err)
 			return responseWriter(nil, err)
 		}
-		log.Infof("%p in controlller about to call MaybeReleaseOffsets", c)
+		log.Infof("%p in controlller about to call MaybeReleaseOffsets seq %d", c, req.Sequence)
 		_, _, err = c.offsetsCache.MaybeReleaseOffsets(req.Sequence, req.RegEntry.TableID)
 		if err != nil {
 			// Send error back to caller

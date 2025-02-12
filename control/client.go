@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"github.com/pkg/errors"
 	"github.com/spirit-labs/tektite/acls"
+	log "github.com/spirit-labs/tektite/logger"
 	"github.com/spirit-labs/tektite/lsm"
 	"github.com/spirit-labs/tektite/offsets"
 	"github.com/spirit-labs/tektite/topicmeta"
@@ -82,6 +83,7 @@ func (c *client) RegisterL0Table(sequence int64, regEntry lsm.RegistrationEntry)
 		RegEntry:      regEntry,
 	}
 	request := req.Serialize(createRequestBuffer())
+	log.Infof("control client sending RegisterL0Request with sequence %d", sequence)
 	_, err = conn.SendRPC(transport.HandlerIDControllerRegisterL0Table, request)
 	return err
 }

@@ -359,9 +359,9 @@ func (c *Cache) MaybeReleaseOffsets(sequence int64, sstableID sst.SSTableID) ([]
 	if !c.started {
 		return nil, nil, errors.New("offsets cache not started")
 	}
-	log.Infof("%p maybereleaseoffsets %d lastreleased %d len heap %d", c, sequence, c.lastReleasedSequence, len(c.offsHeap))
 	c.reorderLock.Lock()
 	defer c.reorderLock.Unlock()
+	log.Infof("%p maybereleaseoffsets %d lastreleased %d len heap %d", c, sequence, c.lastReleasedSequence, len(c.offsHeap))
 	var infos []OffsetTopicInfo
 	var tableIDs []sst.SSTableID
 	if sequence == c.lastReleasedSequence+1 && len(c.offsHeap) == 0 {

@@ -265,7 +265,7 @@ func (s *SocketTransportConnection) writeMessage(buff []byte) error {
 	// Set a write deadline so the write doesn't block for a long time in case the other side of the TCP connection
 	// disappears
 	if err := s.conn.SetWriteDeadline(time.Now().Add(s.writeTimeout)); err != nil {
-		return err
+		return convertNetworkError(err)
 	}
 	_, err := s.conn.Write(buff)
 	if err != nil {
@@ -376,10 +376,10 @@ func (s *SocketClient) CreateConnection(address string) (Connection, error) {
 		tcpConn = netConn.(*net.TCPConn)
 	}
 	if err := tcpConn.SetNoDelay(true); err != nil {
-		return nil, err
+		return nil, convertNetworkError(err)
 	}
 	if err := tcpConn.SetKeepAlive(true); err != nil {
-		return nil, err
+		return nil, convertNetworkError(err)
 	}
 	sc := &SocketTransportConnection{
 		conn:             netConn,
