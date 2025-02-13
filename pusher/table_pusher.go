@@ -74,6 +74,7 @@ type TablePusher struct {
 	producerSeqs                  map[int]map[int]map[int]*sequenceInfo
 	offsetTimes                   map[int]map[int]*offsetTime
 	compactedTopicLastOffsets     map[string]int64
+	outstandingSequencesToCommit  []int64
 	stats                         Stats
 }
 
@@ -703,9 +704,14 @@ func (t *TablePusher) ForceWrite() error {
 	return t.write()
 }
 
+/*
+Returns from table pusher write without releasing sequence
+
+*/
+
 func (t *TablePusher) write() error {
 	if len(t.partitionRecords) == 0 && t.numDirectKVsToCommit == 0 && len(t.timestampOffsetKVs) == 0 &&
-		len(t.compactedTopicLastOffsetKVs) == 0 {
+		len(t.compactedTopicLastOffsetKVs) == 0 && len(t.outstandingSequencesToCommit) == 0 {
 		// Nothing to do
 		return nil
 	}
@@ -782,6 +788,7 @@ func (t *TablePusher) write() error {
 	}
 	numRemainingKvs := len(offs) + t.numDirectKVsToCommit + len(t.timestampOffsetKVs) + len(t.compactedTopicLastOffsetKVs)
 	if numRemainingKvs == 0 {
+		log.Warnf("%p table pusher %p numRemainingKvs == 0", t)
 		// After failing direct writes there may be nothing to do
 		return nil
 	}
@@ -808,6 +815,7 @@ func (t *TablePusher) write() error {
 		for j, partInfo := range topOffset.PartitionInfos {
 			partitionHash, err := t.partitionHashes.GetPartitionHash(topOffset.TopicID, partInfo.PartitionID)
 			if err != nil {
+				log.Errorf("%p table pusher %p err 1 %v", t, err)
 				return err
 			}
 			log.Debugf("table pusher writing entry for topic %d partition %d", topOffset.TopicID, partInfo.PartitionID)
@@ -867,16 +875,19 @@ func (t *TablePusher) write() error {
 	table, smallestKey, largestKey, minVersion, maxVersion, err := sst.BuildSSTable(t.cfg.DataFormat,
 		int(1.1*float64(t.sizeBytes)), len(kvs), iter)
 	if err != nil {
+		log.Errorf("%p table pusher %p err 2 %v", t, err)
 		return err
 	}
 	// Push ssTable to object store
 	buff, err := table.ToStorageBytes(t.cfg.TableCompressionType)
 	if err != nil {
+		log.Errorf("%p table pusher %p err 3 %v", t, err)
 		return err
 	}
 	tableID := sst.CreateSSTableId()
 	if err := objstore.PutWithTimeout(t.objStore, t.cfg.DataBucketName, tableID, buff,
 		objStoreAvailabilityTimeout); err != nil {
+		log.Errorf("%p table pusher %p err 4 %v", t, err)
 		return err
 	}
 	// Register table with LSM

@@ -49,6 +49,10 @@ type Controller struct {
 	memberID                   int32
 	activateClusterVersion     int64
 	credentialsLock            sync.Mutex
+
+	inflightLock          sync.Mutex
+	inflightRegisterCount int
+	requiresReset         bool
 }
 
 func NewController(cfg Conf, objStoreClient objstore.Client, connCaches *transport.ConnCaches, connFactory transport.ConnectionFactory,
@@ -230,11 +234,16 @@ func (c *Controller) MembershipChanged(thisMemberID int32, newState cluster.Memb
 			}
 		}
 	}
-	leaderChanged := c.currentMembership.LeaderVersion != newState.LeaderVersion
 	c.currentMembership = newState
 	c.updateClusterMeta(&newState)
-	if c.offsetsCache != nil && leaderChanged {
-		c.offsetsCache.LeaderChanged()
+	if c.offsetsCache != nil {
+		c.inflightLock.Lock()
+		if c.inflightRegisterCount == 0 {
+			c.offsetsCache.ResetOffsets()
+		} else {
+			c.requiresReset = true
+		}
+		c.inflightLock.Unlock()
 	}
 	if c.topicMetaManager != nil {
 		c.topicMetaManager.MembershipChanged(newState)
@@ -297,8 +306,51 @@ func (c *Controller) handleRegisterL0Table(_ *transport.ConnectionContext, reque
 		Registrations: []lsm.RegistrationEntry{req.RegEntry},
 	}
 	log.Infof("%p controlller in handleRegisterL0Table about to call ApplyLsmChanges sequence %d", c, req.Sequence)
+	// We get a read lock on the offsets cache re-order lock which is obtained only if the sequence is valid.
+	// This R lock is held until the register of the table in the LSM completes
+	// When a controller membership change comes in it will reset and release offsets and set the lowestAcceptableSequence
+	// but it can only do this when no R locks are held. We need to do this to ensure no tables with a sequence obtained
+	// before membership change are registered after offsets are released. If we allowed this then users could see
+	// new data for offsets less than offsets they already consumed.
+
+	/*
+		Holding r lock like this won't work as completions are called in turn, so if 3 registers are lined up waiting for
+		completion, then they will  be completed one by one and it will never proceed.
+
+		what we can do, is keep track of inflight sequences
+		then, if membership is changed, and if there any inflight sequences, we delay the actual resetting of offsets
+		until those sequences have been processed.
+		so we can have a counter -inflight counter, and inflight complete - last completed counter
+		we pass the counter value into the completion for applylsmchanges
+		and in membershipchanged we check if counter == complete
+	*/
+
+	c.inflightLock.Lock()
+	if c.requiresReset {
+		err := common.NewTektiteErrorf(common.Unavailable, "controller resetting offsets")
+		c.inflightLock.Unlock()
+		return responseWriter(nil, err)
+	}
+	c.inflightRegisterCount++
+	c.inflightLock.Unlock()
+	//ok := c.offsetsCache.MaybeRLockOffsets(req.Sequence)
+	//if !ok {
+	//	err := common.NewTektiteErrorf(common.Unavailable, "attempt to register with sequence obtained before membership change")
+	//	return responseWriter(nil, err)
+	//}
 	return c.lsmHolder.ApplyLsmChanges(regBatch, func(err error) error {
+
+		c.inflightLock.Lock()
+		c.inflightRegisterCount--
+		if c.requiresReset && c.inflightRegisterCount == 0 {
+			// no more inflight registers and no more will come so do the reset
+			c.offsetsCache.ResetOffsets()
+			c.requiresReset = false
+		}
+		c.inflightLock.Unlock()
+
 		log.Infof("%p in controller after ApplyLsmChanges sequence %d", c, req.Sequence)
+		//c.offsetsCache.RUnlockOffsets()
 		if err != nil {
 			log.Infof("%p in controller after ApplyLsmChanges sequence %d - returned err", c, req.Sequence, err)
 			return responseWriter(nil, err)

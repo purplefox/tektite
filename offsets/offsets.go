@@ -49,20 +49,21 @@ lowestAcceptableSequence which is updated to be current sequence at the point of
 When MaybeReleaseOffsets is called we reject any attempts where the offset is less than this value.
 */
 type Cache struct {
-	lock                 sync.RWMutex
-	started              bool
-	topicOffsets         map[int][]partitionOffsets
-	topicMetaProvider    topicMetaProvider
-	querier              querier
-	partitionHashes      *parthash.PartitionHashes
-	objStore             objstore.Client
-	dataBucketName       string
-	stopping             atomic.Bool
-	offsetsSeq           int64
-	reorderLock          sync.Mutex
-	offsHeap             seqHeap
-	offsetsMap           map[int64][]OffsetTopicInfo
-	lastReleasedSequence int64
+	lock                     sync.RWMutex
+	started                  bool
+	topicOffsets             map[int][]partitionOffsets
+	topicMetaProvider        topicMetaProvider
+	querier                  querier
+	partitionHashes          *parthash.PartitionHashes
+	objStore                 objstore.Client
+	dataBucketName           string
+	stopping                 atomic.Bool
+	offsetsSeq               int64
+	reorderLock              sync.RWMutex
+	offsHeap                 seqHeap
+	offsetsMap               map[int64][]OffsetTopicInfo
+	lastReleasedSequence     int64
+	lowestAcceptableSequence int64
 }
 
 type topicMetaProvider interface {
@@ -85,13 +86,14 @@ func NewOffsetsCache(topicProvider topicMetaProvider, lsm querier, objStore objs
 		return nil, err
 	}
 	return &Cache{
-		topicMetaProvider: topicProvider,
-		topicOffsets:      make(map[int][]partitionOffsets),
-		querier:           lsm,
-		objStore:          objStore,
-		dataBucketName:    dataBucketName,
-		partitionHashes:   partHashes,
-		offsetsMap:        make(map[int64][]OffsetTopicInfo),
+		topicMetaProvider:        topicProvider,
+		topicOffsets:             make(map[int][]partitionOffsets),
+		querier:                  lsm,
+		objStore:                 objStore,
+		dataBucketName:           dataBucketName,
+		partitionHashes:          partHashes,
+		offsetsMap:               make(map[int64][]OffsetTopicInfo),
+		lowestAcceptableSequence: 1,
 	}, nil
 }
 
@@ -283,27 +285,47 @@ func (c *Cache) ResizePartitionCount(topicID, partitionCount int) (bool, error) 
 	return true, nil
 }
 
-func (c *Cache) LeaderChanged() {
+func (c *Cache) ResetOffsets() {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	if !c.started {
 		return
 	}
-	log.Infof("%p cache membership changed", c)
-	// leader has changed so we will need get any tables registered for sequences got before this change as those
-	// calls will be rejected by the leader version check in controller.
-	// so we need to tell each offset to update last readable offset to highest offset and reset the heap
-	for _, offsets := range c.topicOffsets {
-		for i := 0; i < len(offsets); i++ {
-			offsets[i].leaderChanged()
-		}
-	}
+	// cluster membership has changed, so a pusher might have crashed leaving sequences in the heap which would
+	// otherwise delay releasing of offsets.
+	// We release all waiting offsets
 	c.reorderLock.Lock()
 	defer c.reorderLock.Unlock()
-	// reset any unordered tables waiting to be released
+	// Now release any waiting offsets
+	var topicInfos []OffsetTopicInfo
+	for c.offsHeap.Len() > 0 {
+		h := heap.Pop(&c.offsHeap)
+		holder := h.(seqHolder)
+		infos, ok := c.offsetsMap[holder.seq]
+		if !ok {
+			panic("cannot find info in map")
+		}
+		topicInfos = append(topicInfos, infos...)
+	}
+	if err := c.updateLastReadable(topicInfos); err != nil {
+		log.Warnf("failed to update last readable offsets: %v", err)
+	}
+	// reset all the waiting infos and heap
 	c.offsetsMap = map[int64][]OffsetTopicInfo{}
 	c.offsHeap = nil
+	// Needs to be atomic as updated without lock held
 	c.lastReleasedSequence = atomic.LoadInt64(&c.offsetsSeq)
+	// We update lowestAcceptableSequence so we don't accept any tables being pushed with a sequence given out before
+	// this membership change
+	c.lowestAcceptableSequence = c.lastReleasedSequence + 1
+}
+
+func (c *Cache) resetOffsets() {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	if !c.started {
+		return
+	}
 }
 
 func (c *Cache) loadTopicInfo(topicID int) ([]partitionOffsets, bool, error) {
@@ -359,8 +381,20 @@ func (c *Cache) MaybeReleaseOffsets(sequence int64, sstableID sst.SSTableID) ([]
 	if !c.started {
 		return nil, nil, errors.New("offsets cache not started")
 	}
+	//tz := time.AfterFunc(5*time.Second, func() {
+	//	log.Errorf("*** timedout getting lock")
+	//	common.DumpStacks()
+	//})
 	c.reorderLock.Lock()
 	defer c.reorderLock.Unlock()
+	//	tz.Stop()
+	log.Infof("in MaybeReleaseOffsets after reorderLock")
+	if sequence < c.lowestAcceptableSequence {
+		log.Infof("ignoring sequence %d as lower than last acceptable %d", sequence, c.lowestAcceptableSequence)
+		// Ignore - offsets will already have been released -this is OK, the locking ensures that the table must have
+		// been pushed *before* the offsets were released
+		return nil, nil, nil
+	}
 	log.Infof("%p maybereleaseoffsets %d lastreleased %d len heap %d", c, sequence, c.lastReleasedSequence, len(c.offsHeap))
 	var infos []OffsetTopicInfo
 	var tableIDs []sst.SSTableID
@@ -603,7 +637,7 @@ type partitionOffsets struct {
 	loaded             bool
 }
 
-func (p *partitionOffsets) leaderChanged() {
+func (p *partitionOffsets) releaseLastReadable() {
 	p.lock.Lock()
 	defer p.lock.Unlock()
 	p.lastReadableOffset = p.nextWriteOffset - 1

@@ -15,12 +15,12 @@ import (
 	"time"
 )
 
-func TestInLoop(t *testing.T) {
-	for i := 0; i < 100000; i++ {
-		log.Infof("iteration %d", i)
-		TestChaosSimpleFranz(t)
-	}
-}
+//func TestInLoop(t *testing.T) {
+//	for i := 0; i < 100000; i++ {
+//		log.Infof("iteration %d", i)
+//		TestChaosSimpleFranz(t)
+//	}
+//}
 
 func TestChaosSimpleKafkaGo(t *testing.T) {
 	testChaos(t, NewKafkaGoProducer, NewKafkaGoConsumer, false, false, 3, 1, 1,
@@ -29,7 +29,7 @@ func TestChaosSimpleKafkaGo(t *testing.T) {
 
 func TestChaosSimpleFranz(t *testing.T) {
 	testChaos(t, NewFranzProducer, NewFranzConsumer, false, false, 3, 1, 2,
-		10, 10, 10, 1, 1)
+		10, 10, 10, 1, 2)
 }
 
 func testChaos(t *testing.T, producerFactory ProducerFactory, consumerFactory ConsumerFactory,
