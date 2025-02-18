@@ -617,6 +617,9 @@ func (t *txInfo) sendDirectWrite(kvs []common.KV) error {
 		WriterEpoch: int(t.tektiteEpoch),
 		KVs:         kvs,
 	}
+	for _, kv := range kvs {
+		log.Infof("tx coordinator sending key %v value %v", kv.Key, kv.Value)
+	}
 	buff := pusherReq.Serialize(createRequestBuffer())
 	conn, err := t.c.connCaches.GetConnection(pusherAddress)
 	if err != nil {

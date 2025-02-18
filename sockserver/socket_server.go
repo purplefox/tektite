@@ -137,6 +137,7 @@ func (s *SocketServer) createNetworkListener() (net.Listener, error) {
 	// The actual listen address - this can be different to the passed in address, e.g. if port = 0 meaning
 	// choose an ephemeral port.
 	s.listenAddress = list.Addr().String()
+	log.Infof("started kafka server on address %s", s.address)
 	return list, nil
 }
 

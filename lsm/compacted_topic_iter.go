@@ -5,6 +5,7 @@ import (
 	"github.com/spirit-labs/tektite/common"
 	"github.com/spirit-labs/tektite/iteration"
 	"github.com/spirit-labs/tektite/kafkaencoding"
+	log "github.com/spirit-labs/tektite/logger"
 )
 
 type CompactedTopicIterator struct {
@@ -68,6 +69,7 @@ func (c *CompactedTopicIterator) next() (bool, common.KV, error) {
 	if !compacted {
 		return true, kv, nil
 	}
+	log.Infof("*** compacted topic")
 	lastOffsetMap := map[string]int64{}
 
 	// Iterate through individual records, and keep results in outBuff
@@ -120,6 +122,7 @@ func (c *CompactedTopicIterator) next() (bool, common.KV, error) {
 			}
 			if topicOffset < latestOffsetForKey {
 				// skip the KV
+				log.Infof("**** skipping")
 				skip = true
 			}
 			off += ikl

@@ -2,6 +2,7 @@ package common
 
 import (
 	"encoding/binary"
+	log "github.com/spirit-labs/tektite/logger"
 )
 
 const (
@@ -36,6 +37,9 @@ func ReadValueMetadata(buff []byte) []int64 {
 	lb := len(buff)
 	size := int(buff[lb-1])
 	startPos := lb - size - 1
+	if startPos < 0 {
+		log.Errorf("ReadValueMetadata: invalid start position startPos: %d size: %d buff: %v", startPos, size, buff)
+	}
 	var values []int64
 	for startPos < lb-1 {
 		val, read := binary.Varint(buff[startPos:])

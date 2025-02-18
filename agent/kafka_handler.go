@@ -45,6 +45,15 @@ func extractErrorCode(err error) common.ErrCode {
 
 func (k *kafkaHandler) HandleProduceRequest(_ *kafkaprotocol.RequestHeader, req *kafkaprotocol.ProduceRequest,
 	completionFunc func(resp *kafkaprotocol.ProduceResponse) error) error {
+	//log.Infof("agent %d received batch", k.agent.MemberID())
+	//for _, topicData := range req.TopicData {
+	//	for _, partData := range topicData.PartitionData {
+	//		msgs := kafkaencoding.BatchToRawMessages(partData.Records)
+	//		for _, msg := range msgs {
+	//			log.Infof("agent %d received key %s val %s", k.agent.MemberID(), string(msg.Key), string(msg.Value))
+	//		}
+	//	}
+	//}
 	return k.agent.tablePusher.HandleProduceRequest(k.authContext, req, completionFunc)
 }
 
@@ -78,6 +87,7 @@ func (k *kafkaHandler) HandleOffsetCommitRequest(_ *kafkaprotocol.RequestHeader,
 
 func (k *kafkaHandler) HandleOffsetFetchRequest(_ *kafkaprotocol.RequestHeader, req *kafkaprotocol.OffsetFetchRequest,
 	completionFunc func(resp *kafkaprotocol.OffsetFetchResponse) error) error {
+	log.Infof("agent %d %s received offsetfetch request", k.agent.MemberID(), k.agent.cfg.KafkaListenerConfig.Address)
 	resp, err := k.agent.groupCoordinator.OffsetFetch(k.authContext, req)
 	if err != nil {
 		return err

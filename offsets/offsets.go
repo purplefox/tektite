@@ -14,6 +14,7 @@ import (
 	"github.com/spirit-labs/tektite/sst"
 	"github.com/spirit-labs/tektite/topicmeta"
 	"math"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -58,7 +59,7 @@ type Cache struct {
 	dataBucketName           string
 	stopping                 atomic.Bool
 	offsetsSeq               int64
-	reorderLock              sync.Mutex
+	reorderLock              sync.RWMutex
 	offsHeap                 seqHeap
 	offsetsMap               map[int64][]OffsetTopicInfo
 	lastReleasedSequence     int64
@@ -85,13 +86,14 @@ func NewOffsetsCache(topicProvider topicMetaProvider, lsm querier, objStore objs
 		return nil, err
 	}
 	return &Cache{
-		topicMetaProvider: topicProvider,
-		topicOffsets:      make(map[int][]partitionOffsets),
-		querier:           lsm,
-		objStore:          objStore,
-		dataBucketName:    dataBucketName,
-		partitionHashes:   partHashes,
-		offsetsMap:        make(map[int64][]OffsetTopicInfo),
+		topicMetaProvider:        topicProvider,
+		topicOffsets:             make(map[int][]partitionOffsets),
+		querier:                  lsm,
+		objStore:                 objStore,
+		dataBucketName:           dataBucketName,
+		partitionHashes:          partHashes,
+		offsetsMap:               make(map[int64][]OffsetTopicInfo),
+		lowestAcceptableSequence: 1,
 	}, nil
 }
 
@@ -161,6 +163,7 @@ func (c *Cache) GenerateOffsets(infos []GenerateOffsetTopicInfo) ([]OffsetTopicI
 	c.reorderLock.Lock()
 	defer c.reorderLock.Unlock()
 	c.offsetsMap[seq] = res
+	log.Infof("%p returning sequence %d", c, seq)
 	return res, seq, nil
 }
 
@@ -198,8 +201,6 @@ func (c *Cache) generateOffsets0(infos []GenerateOffsetTopicInfo) ([]OffsetTopic
 			partOffs = append(partOffs, partitionOff)
 		}
 	}
-	// Get a sequence value
-	seq := atomic.AddInt64(&c.offsetsSeq, 1)
 	// Now we can get the actual offsets
 	offInfos := make([]OffsetTopicInfo, len(infos))
 	index := 0
@@ -222,6 +223,8 @@ func (c *Cache) generateOffsets0(infos []GenerateOffsetTopicInfo) ([]OffsetTopic
 		}
 		offInfos[i] = topicOffInfo
 	}
+	// We must get the sequence with the partition locks held
+	seq := atomic.AddInt64(&c.offsetsSeq, 1) // sequence must start at 1 as initial lastReleasedSequence is 0
 	return offInfos, seq, nil
 }
 
@@ -282,29 +285,47 @@ func (c *Cache) ResizePartitionCount(topicID, partitionCount int) (bool, error) 
 	return true, nil
 }
 
-func (c *Cache) MembershipChanged() {
+func (c *Cache) ResetOffsets() {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	if !c.started {
 		return
 	}
-	// membership has changed so it's possible an agent has failed and it might have gotten offsets which will never
-	// have a table registered for. in this case we tell each offset that membership changed so they can update
-	// their last readable, and we also set lowestAcceptable offset to be last offset sequence + 1so we can reject any
-	// attempts to release offsets for sequences below this.
-	seq := atomic.LoadInt64(&c.offsetsSeq)
-	atomic.StoreInt64(&c.lowestAcceptableSequence, seq+1)
-	for _, offsets := range c.topicOffsets {
-		for i := 0; i < len(offsets); i++ {
-			offsets[i].clusterVersionChanged()
-		}
-	}
+	// cluster membership has changed, so a pusher might have crashed leaving sequences in the heap which would
+	// otherwise delay releasing of offsets.
+	// We release all waiting offsets
 	c.reorderLock.Lock()
 	defer c.reorderLock.Unlock()
-	// reset any unordered tables waiting to be released
+	// Now release any waiting offsets
+	var topicInfos []OffsetTopicInfo
+	for c.offsHeap.Len() > 0 {
+		h := heap.Pop(&c.offsHeap)
+		holder := h.(seqHolder)
+		infos, ok := c.offsetsMap[holder.seq]
+		if !ok {
+			panic("cannot find info in map")
+		}
+		topicInfos = append(topicInfos, infos...)
+	}
+	if err := c.updateLastReadable(topicInfos); err != nil {
+		log.Warnf("failed to update last readable offsets: %v", err)
+	}
+	// reset all the waiting infos and heap
 	c.offsetsMap = map[int64][]OffsetTopicInfo{}
 	c.offsHeap = nil
-	c.lastReleasedSequence = seq
+	// Needs to be atomic as updated without lock held
+	c.lastReleasedSequence = atomic.LoadInt64(&c.offsetsSeq)
+	// We update lowestAcceptableSequence so we don't accept any tables being pushed with a sequence given out before
+	// this membership change
+	c.lowestAcceptableSequence = c.lastReleasedSequence + 1
+}
+
+func (c *Cache) resetOffsets() {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	if !c.started {
+		return
+	}
 }
 
 func (c *Cache) loadTopicInfo(topicID int) ([]partitionOffsets, bool, error) {
@@ -354,21 +375,26 @@ func (c *Cache) getTopicOffsets(topicID int) ([]partitionOffsets, bool, error) {
 	return offsets, true, nil
 }
 
-func (c *Cache) MaybeReleaseOffsets(sequence int64, sstableID sst.SSTableID) ([]OffsetTopicInfo, []sst.SSTableID, error) {
+func (c *Cache) MaybeReleaseOffsets(sequence int64) error {
+	if sequence == -1 {
+		return nil
+	}
 	c.lock.RLock()
 	defer c.lock.RUnlock()
 	if !c.started {
-		return nil, nil, errors.New("offsets cache not started")
-	}
-	lowestAcceptable := atomic.LoadInt64(&c.lowestAcceptableSequence)
-	if sequence < lowestAcceptable {
-		// attempt to release offsets came in for a sequence that was gotten before membership change
-		return nil, nil, common.NewTektiteErrorf(common.Unavailable, "cannot release offsets - membership change has occurred")
+		return errors.New("offsets cache not started")
 	}
 	c.reorderLock.Lock()
 	defer c.reorderLock.Unlock()
+	log.Infof("in MaybeReleaseOffsets after reorderLock")
+	if sequence < c.lowestAcceptableSequence {
+		log.Infof("ignoring sequence %d as lower than last acceptable %d", sequence, c.lowestAcceptableSequence)
+		// Ignore - offsets will already have been released -this is OK, the locking ensures that the table must have
+		// been pushed *before* the offsets were released
+		return nil
+	}
+	log.Infof("%p maybereleaseoffsets %d lastreleased %d len heap %d", c, sequence, c.lastReleasedSequence, len(c.offsHeap))
 	var infos []OffsetTopicInfo
-	var tableIDs []sst.SSTableID
 	if sequence == c.lastReleasedSequence+1 && len(c.offsHeap) == 0 {
 		// happy path - avoid heap
 		var ok bool
@@ -378,11 +404,9 @@ func (c *Cache) MaybeReleaseOffsets(sequence int64, sstableID sst.SSTableID) ([]
 		}
 		delete(c.offsetsMap, sequence)
 		c.lastReleasedSequence = sequence
-		tableIDs = []sst.SSTableID{sstableID}
 	} else {
 		heap.Push(&c.offsHeap, seqHolder{
-			seq:     sequence,
-			tableID: sstableID,
+			seq: sequence,
 		})
 		// We pop sequences as long as sequence is contiguous and ascending
 		for len(c.offsHeap) > 0 {
@@ -400,19 +424,31 @@ func (c *Cache) MaybeReleaseOffsets(sequence int64, sstableID sst.SSTableID) ([]
 				} else {
 					infos = mergeTopicInfos(infos, infs)
 				}
-				tableIDs = append(tableIDs, top.tableID)
 			} else {
 				break
 			}
 		}
 	}
 	if err := c.updateLastReadable(infos); err != nil {
-		return nil, nil, err
+		return err
 	}
-	return infos, tableIDs, nil
+	if len(c.offsHeap) > 0 {
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("%p after mayberelease last seq %d tables in heap: ", c, c.lastReleasedSequence))
+		for _, holder := range c.offsHeap {
+			sb.WriteString(fmt.Sprintf("seq:%d ", holder.seq))
+		}
+		log.Infof("%p after mayberelease last seq %d tables in heap: %s", c, c.lastReleasedSequence, sb.String())
+	} else {
+		log.Infof("%p after mayberelease last seq %d heap is: %v", c, c.lastReleasedSequence, c.offsHeap)
+	}
+	return nil
 }
 
 func (c *Cache) updateLastReadable(infos []OffsetTopicInfo) error {
+	if len(infos) == 0 {
+		log.Infof("no lros to update")
+	}
 	for _, topicInfo := range infos {
 		offs, exists, err := c.getTopicOffsets(topicInfo.TopicID)
 		if err != nil {
@@ -422,8 +458,8 @@ func (c *Cache) updateLastReadable(infos []OffsetTopicInfo) error {
 			log.Warnf("updateLastReadable - unknown topic id %d", topicInfo.TopicID)
 		} else {
 			for _, partInfo := range topicInfo.PartitionInfos {
+				log.Infof("setting lro for topic %d partition %d to %d", topicInfo.TopicID, partInfo.PartitionID, partInfo.Offset)
 				offs[partInfo.PartitionID].setLastReadableOffset(partInfo.Offset)
-				log.Debugf("setting lro for topic %d partition %d to %d", topicInfo.TopicID, partInfo.PartitionID, partInfo.Offset)
 			}
 		}
 	}
@@ -473,13 +509,13 @@ func mergePartitionInfos(offs1 []OffsetPartitionInfo, offs2 []OffsetPartitionInf
 	i2 := 0
 	for i1 < len(offs1) || i2 < len(offs2) {
 		var partitionID1 int
-		if i1 == len(offs1) {
+		if i1 >= len(offs1) {
 			partitionID1 = math.MaxInt
 		} else {
 			partitionID1 = offs1[i1].PartitionID
 		}
 		var partitionID2 int
-		if i2 == len(offs2) {
+		if i2 >= len(offs2) {
 			partitionID2 = math.MaxInt
 		} else {
 			partitionID2 = offs2[i2].PartitionID
@@ -491,8 +527,9 @@ func mergePartitionInfos(offs1 []OffsetPartitionInfo, offs2 []OffsetPartitionInf
 			infos3 = append(infos3, offs2[i2])
 			i2++
 		} else {
-			if offs2[i1].Offset > offs2[i2].Offset {
-				panic("later sequence should always have higher offset")
+			if offs1[i1].Offset > offs2[i2].Offset {
+				log.Errorf("offs1: %v\noffs2:%v", offs1, offs2)
+				panic(fmt.Sprintf("later sequence should always have higher offset. offs1: %v offs2:%v", offs1, offs2))
 			}
 			infos3 = append(infos3, OffsetPartitionInfo{
 				PartitionID: partitionID1,
@@ -594,7 +631,7 @@ type partitionOffsets struct {
 	loaded             bool
 }
 
-func (p *partitionOffsets) clusterVersionChanged() {
+func (p *partitionOffsets) releaseLastReadable() {
 	p.lock.Lock()
 	defer p.lock.Unlock()
 	p.lastReadableOffset = p.nextWriteOffset - 1
@@ -636,6 +673,10 @@ func (p *partitionOffsets) load(topicID int, partitionID int, o *Cache) error {
 func (p *partitionOffsets) setLastReadableOffset(offset int64) {
 	p.lock.Lock()
 	defer p.lock.Unlock()
+	if offset <= p.lastReadableOffset {
+		// sanity check
+		panic(fmt.Sprintf("attempt to set lro to value %d current value is %d", offset, p.lastReadableOffset))
+	}
 	p.lastReadableOffset = offset
 }
 
@@ -647,8 +688,8 @@ func (p *partitionOffsets) forceSetLastReadableOffset(offset int64) {
 }
 
 type seqHolder struct {
-	seq     int64
-	tableID sst.SSTableID
+	seq int64
+	//tableID sst.SSTableID
 }
 
 type seqHeap []seqHolder

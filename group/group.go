@@ -55,7 +55,9 @@ func (g *group) Join(apiVersion int16, clientID string, clientHost string, membe
 	sessionTimeout time.Duration, reBalanceTimeout time.Duration, completionFunc JoinCompletion) {
 	g.lock.Lock()
 	defer g.lock.Unlock()
+	log.Infof("groupxxx %s member %s joining current state %d", g.id, memberID, g.state)
 	if g.state != StateEmpty && !g.canSupportProtocols(protocols) {
+		log.Infof("groupxxx %s member %s inconsistent group protocol", g.id, memberID)
 		completionFunc(JoinResult{ErrorCode: kafkaprotocol.ErrorCodeInconsistentGroupProtocol, MemberID: ""})
 		return
 	}
@@ -79,6 +81,7 @@ func (g *group) Join(apiVersion int16, clientID string, clientHost string, membe
 		g.protocolType = protocolType
 		g.addMember(memberID, protocols, sessionTimeout, reBalanceTimeout, completionFunc, clientID, clientHost)
 		g.newMemberAdded = false
+		log.Infof("groupxxx %s first join, was empty now in state pre-rebalance", g.id)
 		g.state = StatePreReBalance
 		// The first time the join stage is attempted we don't try to complete the join until after a delay - this
 		// handles the case when a system starts and many clients join around the same time - we want to avoid
@@ -258,6 +261,7 @@ func (g *group) triggerReBalance() {
 		panic("no members in group")
 	}
 	g.state = StatePreReBalance
+	log.Infof("groupxxx %s triggerRabalance - state is now pre-rebalance", g.id)
 	g.gc.rescheduleTimer(g.id, g.getReBalanceTimeout(), func() {
 		g.handleJoinTimeout()
 	})
@@ -389,6 +393,7 @@ func (g *group) sendJoinResults() {
 		})
 	}
 	g.state = StateAwaitingReBalance
+	log.Infof("groupxxx %s member %s now in state awaiting rebalance - sending join results", g.id)
 	// Now we can set a timer for sync timeout
 	genID := g.generationID
 	g.gc.rescheduleTimer(g.id, g.getReBalanceTimeout(), func() {
@@ -551,6 +556,7 @@ func (g *group) completeSync() {
 	// cancel sync timeout
 	g.gc.cancelTimer(g.id)
 	g.state = StateActive
+	log.Infof("groupxxx %s completed sync now active", g.id)
 }
 
 func (g *group) Heartbeat(memberID string, generationID int) int {
@@ -563,6 +569,7 @@ func (g *group) Heartbeat(memberID string, generationID int) int {
 	case StateEmpty:
 		return kafkaprotocol.ErrorCodeUnknownMemberID
 	case StatePreReBalance:
+		log.Warnf("call to heartbeat but state is pre-rebalance")
 		// Re-balance is required - this will cause client to rejoin group
 		return kafkaprotocol.ErrorCodeRebalanceInProgress
 	case StateAwaitingReBalance, StateActive:
@@ -708,6 +715,9 @@ func (g *group) offsetCommit(authContext *auth.Context, transactional bool, req 
 	if !ok {
 		return kafkaprotocol.ErrorCodeUnknownMemberID
 	}
+
+	log.Infof("%s group offset commit", *req.GroupId)
+
 	// Convert to KV pairs
 	var kvs []common.KV
 	for i, topicData := range req.Topics {
@@ -747,6 +757,9 @@ func (g *group) offsetCommit(authContext *auth.Context, transactional bool, req 
 			} else {
 				offsetKeyType = OffsetKeyPublic
 			}
+			// Note - the offset value that is passed from the client to be committed is the last offset consumer + 1
+			// This is basically the next offset to consume from the partition. Yes, I know this is super confusing
+			// and the source of many off by one errors
 			key := createOffsetKey(g.partHash, offsetKeyType, info.ID, int(partitionData.PartitionIndex))
 			value := make([]byte, 0, 8)
 			value = binary.BigEndian.AppendUint64(value, uint64(offset))
@@ -755,7 +768,7 @@ func (g *group) offsetCommit(authContext *auth.Context, transactional bool, req 
 				Key:   key,
 				Value: value,
 			})
-			log.Debugf("group %s topic %d partition %d committing offset %d", *req.GroupId, info.ID,
+			log.Infof("%s group topic %d partition %d committing offset %d", *req.GroupId, info.ID,
 				partitionData.PartitionIndex, offset)
 		}
 	}
@@ -768,6 +781,9 @@ func (g *group) offsetCommit(authContext *auth.Context, transactional bool, req 
 		WriterEpoch: g.groupEpoch,
 		KVs:         kvs,
 	}
+	//for _, kv := range kvs {
+	//	log.Infof("offsetcommit sending key %v value %v", kv.Key, kv.Value)
+	//}
 	buff := commitReq.Serialize(createRequestBuffer())
 	pusherAddress, ok := cluster.ChooseMemberAddressForHash(g.partHash, g.gc.membership.Members)
 	if !ok {
@@ -790,6 +806,8 @@ func (g *group) offsetCommit(authContext *auth.Context, transactional bool, req 
 			return kafkaprotocol.ErrorCodeUnknownServerError
 		}
 	}
+	log.Infof("%s group offset commit completed ok", *req.GroupId)
+
 	return kafkaprotocol.ErrorCodeNone
 }
 
@@ -805,7 +823,7 @@ func (g *group) offsetDelete(req *kafkaprotocol.OffsetDeleteRequest, resp *kafka
 			return kafkaprotocol.ErrorCodeUnknownServerError
 		}
 		if !foundTopic {
-			log.Warnf("group coordinator - offset commit: topic info not found %v", *topicData.Name)
+			log.Warnf("%s group coordinator - offset commit: topic info not found %v", g.id, *topicData.Name)
 		}
 		for j, partitionData := range topicData.Partitions {
 			if !foundTopic {
@@ -817,7 +835,7 @@ func (g *group) offsetDelete(req *kafkaprotocol.OffsetDeleteRequest, resp *kafka
 				Key:   key,
 				Value: nil,
 			})
-			log.Debugf("group %s topic %d partition %d deleting offset", *req.GroupId, info.ID,
+			log.Infof("%s group %s topic %d partition %d deleting offset", g.id, *req.GroupId, info.ID,
 				partitionData.PartitionIndex)
 		}
 	}
@@ -826,6 +844,9 @@ func (g *group) offsetDelete(req *kafkaprotocol.OffsetDeleteRequest, resp *kafka
 		WriterEpoch: g.groupEpoch,
 		KVs:         kvs,
 	}
+	//for _, kv := range kvs {
+	//	log.Infof("offsetdelete sending key %v value %v", kv.Key, kv.Value)
+	//}
 	buff := commitReq.Serialize(createRequestBuffer())
 	pusherAddress, ok := cluster.ChooseMemberAddressForHash(g.partHash, g.gc.membership.Members)
 	if !ok {
@@ -878,6 +899,9 @@ func (g *group) deleteAllOffsets() int {
 		WriterKey:   g.offsetWriterKey,
 		WriterEpoch: g.groupEpoch,
 		KVs:         kvs,
+	}
+	for _, kv := range kvs {
+		log.Infof("deleteAllOffsets sending key %v value %v", kv.Key, kv.Value)
 	}
 	buff := commitReq.Serialize(createRequestBuffer())
 	pusherAddress, ok := cluster.ChooseMemberAddressForHash(g.partHash, g.gc.membership.Members)
@@ -938,7 +962,7 @@ func (g *group) loadOffset(topicID int, partitionID int) (int64, error) {
 	}
 	if len(queryRes) == 0 {
 		// no stored offset
-		return -1, nil
+		return 0, nil
 	}
 	// We take the first one as that's most recent
 	nonOverlapping := queryRes[0]
@@ -957,7 +981,7 @@ func (g *group) loadOffset(topicID int, partitionID int) (int64, error) {
 		return 0, err
 	}
 	if !ok {
-		return -1, nil
+		return 0, nil
 	}
 	if len(kv.Value) == 0 {
 		// tombstone
@@ -978,7 +1002,7 @@ func (g *group) offsetFetch(authContext *auth.Context, req *kafkaprotocol.Offset
 			log.Errorf("failed to load topic info %v", err)
 			errCode = kafkaprotocol.ErrorCodeUnknownServerError
 		} else if !foundTopic {
-			log.Warnf("group coordinator - offset fetch: topic info not found %v", *topicData.Name)
+			log.Warnf("groupxxx coordinator - offset fetch: topic info not found %v", *topicData.Name)
 			errCode = kafkaprotocol.ErrorCodeUnknownTopicOrPartition
 		} else if authContext != nil {
 			authorised, err := authContext.Authorize(acls.ResourceTypeTopic, topicName, acls.OperationDescribe)
@@ -995,6 +1019,8 @@ func (g *group) offsetFetch(authContext *auth.Context, req *kafkaprotocol.Offset
 				continue
 			}
 			offset, err := g.loadOffset(topicInfo.ID, int(partitionID))
+			log.Infof("%s group offset fetch for topic %d partition %d -  returns offset %d", g.id, topicInfo.ID,
+				partitionID, offset)
 			if err != nil {
 				if common.IsUnavailableError(err) {
 					log.Warnf("failed to load offset %v", err)

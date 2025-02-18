@@ -369,7 +369,10 @@ func (m *Manager) getOverlappingTables(keyStart []byte, keyEnd []byte, level int
 			te := levEntry.tableEntries[i].Get(levEntry)
 			// We must add the overlapping entries from newest to oldest
 			if HasOverlap(keyStart, keyEnd, te.RangeStart, te.RangeEnd) {
+				//log.Infof("table %s has overlap", te.SSTableID)
 				tables = append(tables, te)
+			} else {
+				//log.Infof("table %s has no overlap", te.SSTableID)
 			}
 		}
 	} else {
@@ -554,12 +557,10 @@ func (m *Manager) maybeResizeLevelEntries(level int) {
 
 func (m *Manager) applyRegistrations(registrations []RegistrationEntry) error { //nolint:gocyclo
 	for _, registration := range registrations {
-		log.Debugf("got reg keystart %v keyend %v", registration.KeyStart, registration.KeyEnd)
+		//log.Infof("got reg tableid %s keystart %v keyend %v", registration.TableID, registration.KeyStart, registration.KeyEnd)
 		if len(registration.KeyStart) == 0 || len(registration.KeyEnd) <= 8 {
 			return errwrap.Errorf("registration, key start/end does not have a version: %v", registration)
 		}
-		log.Debugf("LevelManager registering new table %v (%s) from %s to %s in level %d",
-			registration.TableID, string(registration.TableID), string(registration.KeyStart), string(registration.KeyEnd), registration.Level)
 		// The new table entry that we're going to add
 		tabEntry := &TableEntry{
 			SSTableID:        registration.TableID,
@@ -574,6 +575,9 @@ func (m *Manager) applyRegistrations(registrations []RegistrationEntry) error { 
 			NumPrefixDeletes: registration.NumPrefixDeletes,
 		}
 		entry := m.levelEntry(registration.Level)
+		log.Infof("LevelManager registering new table %v (%s) from %s to %s in level %d l0 size is %d",
+			registration.TableID, string(registration.TableID), string(registration.KeyStart),
+			string(registration.KeyEnd), registration.Level, len(entry.tableEntries))
 		if registration.MaxVersion > entry.maxVersion {
 			entry.maxVersion = registration.MaxVersion
 		}

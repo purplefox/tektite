@@ -77,7 +77,10 @@ func testProduceConsume(t *testing.T, producerFactory ProducerFactory, consumerF
 			TimeStamp: time.Now(),
 		})
 	}
-	err := producer.Produce(topicName, msgs)
+	err := producer.Produce(TopicProduce{
+		TopicName: topicName,
+		Messages:  msgs,
+	})
 	require.NoError(t, err)
 
 	consumer := createConsumer(t, consumerFactory, address, topicName, "test_group", serverTls, clientTls)
@@ -115,6 +118,11 @@ func startMinioAndCreateBuckets(t *testing.T) (miniocl.Conf, *minio.MinioContain
 
 func startAgents(t *testing.T, numAgents int, serverTls bool, clientAuth bool, fetchCompression compress.CompressionType,
 	storageCompression compress.CompressionType) ([]*AgentProcess, func(*testing.T)) {
+	return startAgentsWithExtraCommandLine(t, numAgents, serverTls, clientAuth, fetchCompression, storageCompression, "")
+}
+
+func startAgentsWithExtraCommandLine(t *testing.T, numAgents int, serverTls bool, clientAuth bool, fetchCompression compress.CompressionType,
+	storageCompression compress.CompressionType, extraCommandLine string) ([]*AgentProcess, func(*testing.T)) {
 	minioCfg, minioContainer := startMinioAndCreateBuckets(t)
 
 	mgr := NewManager()
@@ -143,6 +151,9 @@ func startAgents(t *testing.T, numAgents int, serverTls bool, clientAuth bool, f
 			fmt.Sprintf("--fetch-compression-type=%s ", fetchCompression.String()) +
 			`--log-level=info`
 		commandLine += tlsConf
+		if extraCommandLine != "" {
+			commandLine += " " + extraCommandLine
+		}
 		log.Debugf("command line: %s", commandLine)
 		agent, err := mgr.StartAgent(commandLine, false)
 		require.NoError(t, err)
@@ -150,8 +161,9 @@ func startAgents(t *testing.T, numAgents int, serverTls bool, clientAuth bool, f
 	}
 	return agents, func(t *testing.T) {
 		for _, agent := range agents {
-			err := agent.Stop()
-			require.NoError(t, err)
+			if err := agent.Stop(); err != nil {
+				log.Errorf("failed to stop agent cleanly: %v", err)
+			}
 		}
 		err := minioContainer.Terminate(context.Background())
 		require.NoError(t, err)
@@ -187,7 +199,7 @@ func startMinio(t *testing.T) (miniocl.Conf, *minio.MinioContainer) {
 	return cfg, minioContainer
 }
 
-func createProducer(t *testing.T, factory ProducerFactory, address string, serverTls bool, clientTls bool,
+func createProducer(t *testing.T, factory ProducerFactory, bootstrapAddress string, serverTls bool, clientTls bool,
 	compressionType compress.CompressionType) Producer {
 	clientKey := ""
 	clientCert := ""
@@ -195,7 +207,7 @@ func createProducer(t *testing.T, factory ProducerFactory, address string, serve
 		clientKey = clientKeyPath
 		clientCert = clientCertPath
 	}
-	producer, err := factory(address, serverTls, serverCertPath, clientCert, clientKey, compressionType)
+	producer, err := factory(bootstrapAddress, serverTls, serverCertPath, clientCert, clientKey, compressionType)
 	require.NoError(t, err)
 	return producer
 }
@@ -208,7 +220,9 @@ func createConsumer(t *testing.T, factory ConsumerFactory, address string, topic
 		clientKey = clientKeyPath
 		clientCert = clientCertPath
 	}
-	consumer, err := factory(address, topicName, groupID, serverTls, serverCertPath, clientCert, clientKey)
+	consumer, err := factory(address, groupID, serverTls, serverCertPath, clientCert, clientKey)
+	require.NoError(t, err)
+	err = consumer.Subscribe(topicName)
 	require.NoError(t, err)
 	return consumer
 }

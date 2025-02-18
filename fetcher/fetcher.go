@@ -11,7 +11,6 @@ import (
 	"github.com/spirit-labs/tektite/parthash"
 	"github.com/spirit-labs/tektite/sst"
 	"github.com/spirit-labs/tektite/topicmeta"
-	"github.com/spirit-labs/tektite/transport"
 	"sync"
 	"sync/atomic"
 )
@@ -39,20 +38,20 @@ controller and lastReadableOffset is updated it sends a notification to all agen
 the cache of ids in PartitionRecentTables.
 */
 type BatchFetcher struct {
-	objStore           objstore.Client
-	topicProvider      topicInfoProvider
-	partitionHashes    *parthash.PartitionHashes
-	controlFactory     control.ClientFactory
-	tableGetter        sst.TableGetter
-	recentTables       PartitionRecentTables
+	objStore        objstore.Client
+	topicProvider   topicInfoProvider
+	partitionHashes *parthash.PartitionHashes
+	controlFactory  control.ClientFactory
+	tableGetter     sst.TableGetter
+	//recentTables       PartitionRecentTables
 	controlClientCache *control.ClientCache
 	dataBucketName     string
-	readExecs          []readExecutor
-	localCache         *LocalSSTCache
-	execAssignPos      int64
-	resetSequence      int64
-	memberID           int32
-	compressionType    compress.CompressionType
+	//readExecs          []readExecutor
+	localCache *LocalSSTCache
+	//execAssignPos      int64
+	resetSequence   int64
+	memberID        int32
+	compressionType compress.CompressionType
 }
 
 func NewBatchFetcher(objStore objstore.Client, topicProvider topicInfoProvider, partitionHashes *parthash.PartitionHashes,
@@ -67,13 +66,13 @@ func NewBatchFetcher(objStore objstore.Client, topicProvider topicInfoProvider, 
 		partitionHashes:    partitionHashes,
 		controlClientCache: controlClientCache,
 		tableGetter:        tableGetter,
-		readExecs:          make([]readExecutor, cfg.NumReadExecutors),
-		localCache:         localCache,
-		dataBucketName:     cfg.DataBucketName,
-		memberID:           -1,
-		compressionType:    cfg.FetchCompressionType,
+		//readExecs:          make([]readExecutor, cfg.NumReadExecutors),
+		localCache:      localCache,
+		dataBucketName:  cfg.DataBucketName,
+		memberID:        -1,
+		compressionType: cfg.FetchCompressionType,
 	}
-	bf.recentTables = CreatePartitionRecentTables(cfg.MaxCachedTablesPerPartition, bf)
+	//bf.recentTables = CreatePartitionRecentTables(cfg.MaxCachedTablesPerPartition, bf)
 	return bf, nil
 }
 
@@ -115,26 +114,26 @@ type topicInfoProvider interface {
 }
 
 func (b *BatchFetcher) Start() error {
-	for i := 0; i < len(b.readExecs); i++ {
-		b.readExecs[i].ch = make(chan *FetchState, readExecChannelSize)
-		b.readExecs[i].start()
-	}
+	//for i := 0; i < len(b.readExecs); i++ {
+	//	b.readExecs[i].ch = make(chan *FetchState, readExecChannelSize)
+	//	b.readExecs[i].start()
+	//}
 	return nil
 }
 
 func (b *BatchFetcher) Stop() error {
-	for i := 0; i < len(b.readExecs); i++ {
-		b.readExecs[i].stop()
-	}
+	//for i := 0; i < len(b.readExecs); i++ {
+	//	b.readExecs[i].stop()
+	//}
 	return nil
 }
 
-func (b *BatchFetcher) HandleTableRegisteredNotification(_ *transport.ConnectionContext, request []byte,
-	_ []byte, _ transport.ResponseWriter) error {
-	notif := &control.TablesRegisteredNotification{}
-	notif.Deserialize(request, 0)
-	return b.recentTables.handleTableRegisteredNotification(notif)
-}
+//func (b *BatchFetcher) HandleTableRegisteredNotification(_ *transport.ConnectionContext, request []byte,
+//	_ []byte, _ transport.ResponseWriter) error {
+//	notif := &control.TablesRegisteredNotification{}
+//	notif.Deserialize(request, 0)
+//	return b.recentTables.handleTableRegisteredNotification(notif)
+//}
 
 func (b *BatchFetcher) HandleFetchRequest(authContext *auth.Context, apiVersion int16, req *kafkaprotocol.FetchRequest,
 	completionFunc func(resp *kafkaprotocol.FetchResponse) error) error {
@@ -142,11 +141,11 @@ func (b *BatchFetcher) HandleFetchRequest(authContext *auth.Context, apiVersion 
 		// Version 3 of api introduces max bytes, so we default it for earlier versions
 		req.MaxBytes = defaultFetchMaxBytes
 	}
-	pos := atomic.AddInt64(&b.execAssignPos, 1)
-	readExec := &b.readExecs[pos%int64(len(b.readExecs))]
+	//pos := atomic.AddInt64(&b.execAssignPos, 1)
+	//	//readExec := &b.readExecs[pos%int64(len(b.readExecs))]
 	// No need to shuffle partitions as golang map has non-deterministic iteration order - this ensures we don't have
 	// the same partition getting all the data and others starving
-	fetchState, err := newFetchState(authContext, b, req, readExec, completionFunc)
+	fetchState, err := newFetchState(authContext, b, req, nil, completionFunc)
 	if err != nil {
 		return err
 	}
@@ -179,7 +178,7 @@ func (b *BatchFetcher) getClient() (control.Client, error) {
 
 func (b *BatchFetcher) MembershipChanged(thisMemberID int32, membership cluster.MembershipState) error {
 	atomic.StoreInt32(&b.memberID, thisMemberID)
-	b.recentTables.membershipChanged(membership)
+	//b.recentTables.membershipChanged(membership)
 	return nil
 }
 
