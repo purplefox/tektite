@@ -561,10 +561,10 @@ func (c *Coordinator) CompleteTx(groupID string, pid int64, abort bool) error {
 }
 
 func (c *Coordinator) OffsetFetch(authContext *auth.Context, req *kafkaprotocol.OffsetFetchRequest) (*kafkaprotocol.OffsetFetchResponse, error) {
-	log.Infof("OffsetFetch before lock")
+	//log.Infof("OffsetFetch before lock")
 	c.lock.RLock()
 	defer c.lock.RUnlock()
-	log.Infof("OffsetFetch after getting lock")
+	//log.Infof("OffsetFetch after getting lock")
 	if err := c.checkStarted(); err != nil {
 		return nil, err
 	}
@@ -580,7 +580,7 @@ func (c *Coordinator) OffsetFetch(authContext *auth.Context, req *kafkaprotocol.
 	groupID := common.SafeDerefStringPtr(req.GroupId)
 	g, ok := c.getGroup(groupID)
 	if !ok {
-		log.Infof("OffsetFetch group not found")
+		//log.Infof("OffsetFetch group not found")
 		fillAllErrorCodesForOffsetFetch(&resp, kafkaprotocol.ErrorCodeGroupIDNotFound)
 		return &resp, nil
 	}
@@ -591,7 +591,7 @@ func (c *Coordinator) OffsetFetch(authContext *auth.Context, req *kafkaprotocol.
 			fillAllErrorCodesForOffsetFetch(&resp, kafkaprotocol.ErrorCodeUnknownServerError)
 			return &resp, nil
 		} else if !authorised {
-			log.Infof("OffsetFetch auth failed")
+			//log.Infof("OffsetFetch auth failed")
 			fillAllErrorCodesForOffsetFetch(&resp, kafkaprotocol.ErrorCodeGroupAuthorizationFailed)
 			return &resp, nil
 		}

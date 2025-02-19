@@ -54,7 +54,7 @@ func (a *Agent) HandleMetadataRequest(authContext *auth.Context, hdr *kafkaproto
 		} else {
 			// The request had no topics - and the error code is on the topic in the response, but we need
 			// to send an error back, so we just send it back on an "unknown" topic
-			log.Errorf("failed to handle metadata request: %v", err)
+			log.Warnf("failed to handle metadata request: %v", err)
 			resp.Topics = make([]kafkaprotocol.MetadataResponseMetadataResponseTopic, 1)
 			resp.Topics[0].Name = common.StrPtr("unknown")
 			resp.Topics[0].ErrorCode = int16(kafkaprotocol.ErrorCodeUnknownTopicOrPartition)
@@ -100,6 +100,7 @@ func (a *Agent) getAgentsInSameAz(hdr *kafkaprotocol.RequestHeader) ([]control.A
 		log.Warnf("Kafka client connecting with a ClientID (\"%s\") which does not contain availability zone. This means there may be unwanted cross AZ traffic. Please append tek_az=<availability zone> to the client id.",
 			clientID)
 	}
+	//log.Infof("connected with az %s", az)
 
 	clusterMetadata := a.controller.GetClusterMeta()
 	if len(clusterMetadata) == 0 {

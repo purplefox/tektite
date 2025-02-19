@@ -207,7 +207,7 @@ func createProducer(t *testing.T, factory ProducerFactory, bootstrapAddress stri
 		clientKey = clientKeyPath
 		clientCert = clientCertPath
 	}
-	producer, err := factory(bootstrapAddress, serverTls, serverCertPath, clientCert, clientKey, compressionType)
+	producer, err := factory(bootstrapAddress, serverTls, serverCertPath, clientCert, clientKey, compressionType, "az1")
 	require.NoError(t, err)
 	return producer
 }
@@ -220,7 +220,7 @@ func createConsumer(t *testing.T, factory ConsumerFactory, address string, topic
 		clientKey = clientKeyPath
 		clientCert = clientCertPath
 	}
-	consumer, err := factory(address, groupID, serverTls, serverCertPath, clientCert, clientKey)
+	consumer, err := factory(address, groupID, serverTls, serverCertPath, clientCert, clientKey, "az1")
 	require.NoError(t, err)
 	err = consumer.Subscribe(topicName)
 	require.NoError(t, err)
@@ -239,9 +239,10 @@ func newAdminProducer(address string, serverTls bool, clientTls bool) (*kafkago.
 		"bootstrap.servers":  address,
 		"acks":               "all",
 		"enable.idempotence": strconv.FormatBool(true),
+		"client.id":          "tek_az=az1",
 	}
 	if serverTls {
-		cm = configureConfigureForTls(cm, serverCertPath, clientCert, clientKey)
+		cm = configureForTls(cm, serverCertPath, clientCert, clientKey)
 	}
 	return kafkago.NewAdminClient(&cm)
 }

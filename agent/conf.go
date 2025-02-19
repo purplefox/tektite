@@ -75,7 +75,7 @@ func CreateConfFromCommandConf(commandConf CommandConf) (Conf, error) {
 	} else {
 		kafkaAddress = commandConf.KafkaListenAddress
 	}
-	log.Infof("agent has kafka listener address %s", kafkaAddress)
+	log.Debugf("agent has kafka listener address %s", kafkaAddress)
 	cfg.KafkaListenerConfig.Address = kafkaAddress
 	cfg.KafkaListenerConfig.TLSConfig = commandConf.KafkaTlsConf
 

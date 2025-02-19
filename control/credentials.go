@@ -7,7 +7,6 @@ import (
 	"github.com/spirit-labs/tektite/asl/encoding"
 	"github.com/spirit-labs/tektite/cluster"
 	"github.com/spirit-labs/tektite/common"
-	log "github.com/spirit-labs/tektite/logger"
 	"github.com/spirit-labs/tektite/parthash"
 	"github.com/spirit-labs/tektite/queryutils"
 	"github.com/spirit-labs/tektite/sst"
@@ -97,9 +96,9 @@ func (c *Controller) sendDirectWrite(kvs []common.KV) error {
 		WriterEpoch: c.GetActivateClusterVersion(),
 		KVs:         kvs,
 	}
-	for _, kv := range kvs {
-		log.Infof("controller.sendDirectWrite sending key %v value %v", kv.Key, kv.Value)
-	}
+	//for _, kv := range kvs {
+	//	log.Infof("controller.sendDirectWrite sending key %v value %v", kv.Key, kv.Value)
+	//}
 	reqBuff := req.Serialize(createRequestBuffer())
 	pusherAddress, ok := cluster.ChooseMemberAddressForHash(credentialsPrefix, c.currentMembership.Members)
 	if !ok {

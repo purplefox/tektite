@@ -222,7 +222,7 @@ func buildBinary() error {
 }
 
 type ProducerFactory func(address string, tlsEnabled bool, serverCertFile string, clientCertFile string,
-	clientPrivateKeyFile string, compressionType compress.CompressionType) (Producer, error)
+	clientPrivateKeyFile string, compressionType compress.CompressionType, az string) (Producer, error)
 
 type TopicProduce struct {
 	TopicName string
@@ -234,7 +234,8 @@ type Producer interface {
 	Close() error
 }
 
-type ConsumerFactory func(address string, groupID string, tlsEnabled bool, serverCertFile string, clientCertFile string, clientPrivateKeyFile string) (Consumer, error)
+type ConsumerFactory func(address string, groupID string, tlsEnabled bool, serverCertFile string, clientCertFile string,
+	clientPrivateKeyFile string, az string) (Consumer, error)
 
 type Consumer interface {
 	Fetch(timeout time.Duration) (*kafka.Message, error)

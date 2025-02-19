@@ -575,9 +575,9 @@ func (m *Manager) applyRegistrations(registrations []RegistrationEntry) error { 
 			NumPrefixDeletes: registration.NumPrefixDeletes,
 		}
 		entry := m.levelEntry(registration.Level)
-		log.Infof("LevelManager registering new table %v (%s) from %s to %s in level %d l0 size is %d",
-			registration.TableID, string(registration.TableID), string(registration.KeyStart),
-			string(registration.KeyEnd), registration.Level, len(entry.tableEntries))
+		//log.Infof("LevelManager registering new table %v (%s) from %s to %s in level %d l0 size is %d",
+		//	registration.TableID, string(registration.TableID), string(registration.KeyStart),
+		//	string(registration.KeyEnd), registration.Level, len(entry.tableEntries))
 		if registration.MaxVersion > entry.maxVersion {
 			entry.maxVersion = registration.MaxVersion
 		}

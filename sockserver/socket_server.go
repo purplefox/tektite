@@ -137,7 +137,6 @@ func (s *SocketServer) createNetworkListener() (net.Listener, error) {
 	// The actual listen address - this can be different to the passed in address, e.g. if port = 0 meaning
 	// choose an ephemeral port.
 	s.listenAddress = list.Addr().String()
-	log.Infof("started kafka server on address %s", s.address)
 	return list, nil
 }
 
@@ -213,7 +212,7 @@ func (c *serverConnection) readPanicHandler() {
 	// request which has insufficient bytes in the buffer which would cause a runtime error: index out of range panic
 	if r := recover(); r != nil {
 		// Log using fmt as logger might be cleaned up and unusable by this point
-		fmt.Printf("failure in connection readLoop: %v\n", r)
+		fmt.Printf("failure in connection readLoop: caught PANIC %v\n", r)
 		if err := c.conn.Close(); err != nil {
 			// Ignore
 		}

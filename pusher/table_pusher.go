@@ -705,7 +705,7 @@ func (t *TablePusher) write() error {
 		// Nothing to do
 		return nil
 	}
-	log.Infof("%p tablepusher write called", t)
+	//log.Infof("%p tablepusher write called", t)
 	client, err := t.getClient()
 	if err != nil {
 		return err
@@ -761,7 +761,7 @@ func (t *TablePusher) write() error {
 	if err != nil {
 		return err
 	}
-	log.Infof("%p table pusher prePush returned sequence %d", t, seq)
+	//log.Infof("%p table pusher prePush returned sequence %d", t, seq)
 	if len(offs) != len(getOffSetInfos) {
 		panic("invalid offsets returned")
 	}
@@ -786,29 +786,58 @@ func (t *TablePusher) write() error {
 		return nil
 	}
 	// note, same instance of client must be passed in here
-	regEntry := t.pushTable(getOffSetInfos, offs)
-	log.Infof("%p table pusher attempting to push table %s with seq %d", t, regEntry.TableID, seq)
+	regEntry, table := t.pushTable(getOffSetInfos, offs)
+	//log.Infof("%p table pusher attempting to push table %s with seq %d", t, regEntry.TableID, seq)
 	if err := client.RegisterL0Table(seq, regEntry); err != nil {
 		// this will release offsets even in case of error, so the same data can be retried in a different table with
 		// different offsets
 		log.Errorf("%p table pusher %p err 5 %v", t, err)
 		return err
 	}
-	log.Infof("%p registerl0table returned ok", t)
+	iter, err := table.NewIterator(nil, nil)
+	if err != nil {
+		return err
+	}
+	for {
+		ok, kv, err := iter.Next()
+		if err != nil {
+			return err
+		}
+		if !ok {
+			break
+		}
+		if kv.Key[16] == common.EntryTypeTopicData {
+			//meta := common.ReadValueMetadata(kv.Value)
+			//offsetKey, _ := encoding.KeyDecodeInt(kv.Key, 17)
+			//baseOffset := kafkaencoding.BaseOffset(kv.Value)
+			//if baseOffset != offsetKey {
+			//	panic("base offset and offset key different")
+			//}
+			numRecords := int64(kafkaencoding.NumRecords(kv.Value))
+			offsetDelta := int64(kafkaencoding.LastOffsetDelta(kv.Value))
+			if numRecords != offsetDelta+1 {
+				panic("numRecords and offsetDelta different")
+			}
+			//log.Infof("registered batch for topic %d partition %d with offset key %d firstoffset %d lastoffset %d",
+			//	meta[0], meta[1], offsetKey, baseOffset, baseOffset+offsetDelta)
+		}
+	}
+
+	//log.Infof("%p registerl0table returned ok", t)
 	t.updateOffsetTimes()
 	// Send back completions
 	t.callCompletions(nil)
 	// reset - the state
 	t.reset()
-	log.Infof("%p table pusher pushed table %s with keystart %v keyend %v", t, regEntry.TableID,
-		regEntry.KeyStart, regEntry.KeyEnd)
+	//log.Infof("%p table pusher pushed table %s with keystart %v keyend %v", t, regEntry.TableID,
+	//	regEntry.KeyStart, regEntry.KeyEnd)
 	return nil
 }
 
 // if we get here then we have obtained a sequence and this function MUST not exit unless registerL0Table is called, which
 // releases the sequence OR the agent must crash (which would reset the sequences on the controller). that is why it
 // does not return an error
-func (t *TablePusher) pushTable(getOffSetInfos []offsets.GenerateOffsetTopicInfo, offs []offsets.OffsetTopicInfo) lsm.RegistrationEntry {
+func (t *TablePusher) pushTable(getOffSetInfos []offsets.GenerateOffsetTopicInfo, offs []offsets.OffsetTopicInfo) (lsm.RegistrationEntry, *sst.SSTable) {
 	// Create KVs for the batches
 	var kvs []common.KV
 	// Add any offsets to commit
@@ -868,10 +897,17 @@ func (t *TablePusher) pushTable(getOffSetInfos []offsets.GenerateOffsetTopicInfo
 							on which agent they came from. The LSM can then parallelize compaction of non overlapping groups of tables
 							thus allowing LSM compaction to scale with number of agents.
 					*/
+					lastOffsetDelta := int64(kafkaencoding.LastOffsetDelta(records))
+					//log.Infof("lastoffsetdelta is %d", lastOffsetDelta)
 					key := make([]byte, 0, 33)
 					key = append(key, partitionHash...)
 					key = append(key, common.EntryTypeTopicData)
-					key = encoding.KeyEncodeInt(key, offset)
+					lastOffsetInBatch := offset + lastOffsetDelta
+					// The key we use in the ssTable is the *last* offset in the batch. This means that if we issue
+					// a query to the lsm for a key where lastOffset >= fetchOffset we will get all tables. If we used
+					// first offset as the key and the table, say, contained keys 10-50, and fetchOffset was 30 it
+					// would not return the table.
+					key = encoding.KeyEncodeInt(key, lastOffsetInBatch)
 					key = encoding.EncodeVersion(key, 0)
 					// Fill in base offset
 					binary.BigEndian.PutUint64(records, uint64(offset))
@@ -881,13 +917,14 @@ func (t *TablePusher) pushTable(getOffSetInfos []offsets.GenerateOffsetTopicInfo
 						Key:   key,
 						Value: value,
 					})
+					//log.Infof("table pusher created )
 					//log.Infof("tablepusher receiving batch")
-					msgs := kafkaencoding.BatchToRawMessages(records)
-					for i, msg := range msgs {
-						log.Infof("%p tablepusher offset for key %s val %s is %d partition %d", t, string(msg.Key), string(msg.Value),
-							int(offset)+i, partInfo.PartitionID)
-					}
-					offset += int64(kafkaencoding.NumRecords(records))
+					//msgs := kafkaencoding.BatchToRawMessages(records)
+					//for i, msg := range msgs {
+					//	log.Infof("%p tablepusher offset for key %s val %s is %d partition %d", t, string(msg.Key), string(msg.Value),
+					//		int(offset)+i, partInfo.PartitionID)
+					//}
+					offset += lastOffsetDelta + 1
 				}
 			}
 		}
@@ -937,7 +974,7 @@ func (t *TablePusher) pushTable(getOffSetInfos []offsets.GenerateOffsetTopicInfo
 		TableSize:        uint64(table.SizeBytes()),
 		NumPrefixDeletes: uint32(table.NumPrefixDeletes()),
 	}
-	return regEntry
+	return regEntry, table
 }
 
 func (t *TablePusher) updateOffsetTimes() {

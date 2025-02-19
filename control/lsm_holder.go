@@ -167,12 +167,12 @@ func (s *LsmHolder) ApplyLsmChanges(regBatch lsm.RegistrationBatch, completionFu
 		return completionFunc(err)
 	}
 	if ok {
-		log.Infof("ApplyLsmChanges - applied directly")
+		//log.Infof("ApplyLsmChanges - applied directly")
 		s.waitingCompletions = append(s.waitingCompletions, completionFunc)
 		return nil
 	}
 	// L0 is full - queue the registration - it will be retried when there is space in L0
-	log.Infof("ApplyLsmChanges - l0 is full queueing registration")
+	//log.Infof("ApplyLsmChanges - l0 is full queueing registration")
 	s.hasQueuedRegistrations.Store(true)
 	s.queuedRegistrations = append(s.queuedRegistrations, queuedRegistration{
 		regBatch:       regBatch,
@@ -235,7 +235,7 @@ func (s *LsmHolder) maybeWriteState() ([]func(error) error, error) {
 func (s *LsmHolder) maybeRetryApplies0() error {
 	s.lock.Lock()
 	defer s.lock.Unlock()
-	log.Infof("in maybeRetryApplies0, quueuedRegistrations: %d", len(s.queuedRegistrations))
+	//log.Infof("in maybeRetryApplies0, quueuedRegistrations: %d", len(s.queuedRegistrations))
 	var newWaiting []queuedRegistration
 	// Try and reapply the registrations
 	for _, queuedReg := range s.queuedRegistrations {

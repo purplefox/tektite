@@ -3,6 +3,7 @@ package integ
 import (
 	"fmt"
 	"github.com/google/uuid"
+	"github.com/pkg/errors"
 	"github.com/spirit-labs/tektite/compress"
 	"github.com/spirit-labs/tektite/kafka"
 	log "github.com/spirit-labs/tektite/logger"
@@ -87,7 +88,7 @@ func testChaos(t *testing.T, producerFactory ProducerFactory, consumerFactory Co
 		consumerGroup := fmt.Sprintf("consumer-group-%d", i)
 		groupState := &consumerGroupState{
 			groupID:      strings.ToUpper(consumerGroup),
-			lastKeysMap:  map[string]map[int]struct{}{},
+			lastKeysMap:  map[string]int{},
 			totToConsume: numSenders * numBatches * numKeysPerTopic * numValuesPerKeyPerBatch,
 		}
 		groupStates = append(groupStates, groupState)
@@ -136,19 +137,19 @@ func testChaos(t *testing.T, producerFactory ProducerFactory, consumerFactory Co
 		}
 	}()
 
-	log.Infof("waiting for complete")
+	//log.Infof("waiting for complete")
 
 	for _, s := range senders {
 		s.waitComplete()
 	}
 
-	log.Infof("senders complete")
+	//log.Infof("senders complete")
 
 	for _, f := range fetchers {
 		f.waitComplete()
 	}
 
-	log.Infof("fetchers complete")
+	//log.Infof("fetchers complete")
 }
 
 func createConsumerForChaos(t *testing.T, factory ConsumerFactory, address string, groupID string,
@@ -159,7 +160,7 @@ func createConsumerForChaos(t *testing.T, factory ConsumerFactory, address strin
 		clientKey = clientKeyPath
 		clientCert = clientCertPath
 	}
-	consumer, err := factory(address, groupID, serverTls, serverCertPath, clientCert, clientKey)
+	consumer, err := factory(address, groupID, serverTls, serverCertPath, clientCert, clientKey, "az1")
 	require.NoError(t, err)
 	return consumer
 }
@@ -215,12 +216,12 @@ func (p *sender) loop() {
 			})
 		}
 		valueIndex += p.numValuesPerKeyPerBatch
-		start := time.Now()
+		//start := time.Now()
 		if err := p.producer.Produce(topicProduces...); err != nil {
 			panic(fmt.Sprintf("produce failed: %v", err))
 		}
-		log.Infof("produce took %d ms", time.Now().Sub(start).Milliseconds())
-		log.Infof("sender sent batch")
+		//log.Infof("produce took %d ms", time.Now().Sub(start).Milliseconds())
+		//log.Infof("sender sent batch")
 	}
 }
 
@@ -247,8 +248,8 @@ func (p *fetcher) stop() error {
 
 func (p *fetcher) loop() {
 	if err := p.loop0(); err != nil {
-		//panic(fmt.Sprintf("fetcher failed: %v", err))
-		log.Errorf("fetcher failed: %v", err)
+		panic(fmt.Sprintf("fetcher failed: %v", err))
+		//log.Errorf("fetcher failed: %v", err)
 	}
 }
 
@@ -258,9 +259,9 @@ func (p *fetcher) loop0() error {
 	p.lock.Lock()
 	defer p.lock.Unlock()
 	defer p.stopWg.Done()
-	defer func() {
-		log.Infof("fetcher with consumer %s exiting loop", p.consumer.String())
-	}()
+	//defer func() {
+	//	log.Infof("fetcher with consumer %s exiting loop", p.consumer.String())
+	//}()
 	count := 0
 	for !p.groupState.finished() {
 		//fetchLock.Lock()
@@ -268,15 +269,17 @@ func (p *fetcher) loop0() error {
 		msg, err := p.consumer.Fetch(500 * time.Millisecond)
 		//	log.Infof("fetcher %p consumer group %s fetch complete", p, p.groupState.groupID)
 		if err != nil {
+			log.Warnf("failed to fetch: %v", err)
+			continue
 			//fetchLock.Unlock()
-			return err
+			//return err
 		}
 		if msg == nil {
 			//fetchLock.Unlock()
 			continue
 		}
-		log.Infof("fetcher for consumer %s got key %s val %s partition %d offset %d",
-			p.consumer.String(), string(msg.Key), string(msg.Value), msg.PartInfo.PartitionID, msg.PartInfo.Offset)
+		//log.Infof("fetcher for consumer %s got key %s val %s partition %d offset %d",
+		//	p.consumer.String(), string(msg.Key), string(msg.Value), msg.PartInfo.PartitionID, msg.PartInfo.Offset)
 		//log.Infof("%p partition %d offset %d got key %s val %s", p, msg.PartInfo.PartitionID, msg.PartInfo.Offset,
 		//	string(msg.Key), string(msg.Value))
 		if err := p.groupState.consumed(msg, p); err != nil {
@@ -285,13 +288,13 @@ func (p *fetcher) loop0() error {
 		}
 		//fetchLock.Unlock()
 		count++
-		if count == p.commitBatchSize {
-			log.Infof("%s group - fetcher %p calling commit", p.groupState.groupID, p)
+		if count >= p.commitBatchSize {
+			//log.Infof("%s group - fetcher %p calling commit", p.groupState.groupID, p)
 			if err := p.consumer.Commit(); err != nil {
-				log.Errorf("consumer commit failed: %v", err)
-				return err
+				log.Warnf("consumer commit failed: %v", err)
+				continue
 			}
-			log.Infof("committed ok")
+			//log.Infof("committed ok")
 			count = 0
 		}
 	}
@@ -305,7 +308,7 @@ func (p *fetcher) loop0() error {
 type consumerGroupState struct {
 	groupID       string
 	lock          sync.Mutex
-	lastKeysMap   map[string]map[int]struct{}
+	lastKeysMap   map[string]int
 	consumedCount int
 	totToConsume  int
 	logTimer      *time.Timer
@@ -320,19 +323,19 @@ func (c *consumerGroupState) finished() bool {
 func (c *consumerGroupState) startLogger() {
 	c.lock.Lock()
 	defer c.lock.Unlock()
-	c.scheduleLogTimer()
+	//c.scheduleLogTimer()
 }
 
 func (c *consumerGroupState) stopTimer() {
 	c.lock.Lock()
 	defer c.lock.Unlock()
-	c.logTimer.Stop()
+	//c.logTimer.Stop()
 }
 
 func (c *consumerGroupState) scheduleLogTimer() {
-	log.Infof("scheduling log timer")
+	//log.Infof("scheduling log timer")
 	c.logTimer = time.AfterFunc(5*time.Second, func() {
-		log.Infof("log timer fired")
+		//log.Infof("log timer fired")
 		c.lock.Lock()
 		defer c.lock.Unlock()
 		if len(c.lastKeysMap) == 0 {
@@ -348,47 +351,29 @@ func (c *consumerGroupState) scheduleLogTimer() {
 func (c *consumerGroupState) consumed(msg *kafka.Message, f *fetcher) error {
 	c.lock.Lock()
 	defer c.lock.Unlock()
+
 	sKey := string(msg.Key)
-
-	m, ok := c.lastKeysMap[sKey]
+	lastVal, ok := c.lastKeysMap[sKey]
 	if !ok {
-		m = make(map[int]struct{})
-		c.lastKeysMap[sKey] = m
+		lastVal = -1
 	}
-
 	val, err := strconv.Atoi(string(msg.Value)[6:])
+	//log.Infof("%s group consumed called key %s fetcher %p val %d lastVal %d partition %d offset %d",
+	//	c.groupID, sKey, f, val, lastVal, msg.PartInfo.PartitionID, msg.PartInfo.Offset)
 	if err != nil {
 		return err
 	}
-	l1 := len(m)
-	m[val] = struct{}{}
-	l2 := len(m)
-
-	c.consumedCount += l2 - l1
-
-	log.Infof("%s group consumed called key %s fetcher %p val %d partition %d offset %d",
-		c.groupID, sKey, f, val, msg.PartInfo.PartitionID, msg.PartInfo.Offset)
-
-	//lastVal, ok := c.lastKeysMap[sKey]
-	//if !ok {
-	//	lastVal = -1
-	//}
-	//val, err := strconv.Atoi(string(msg.Value)[6:])
-	//log.Infof("%s group consumed called key %s fetcher %p val %d lastVal %d partition %d offset %d",
-	//	c.groupID, sKey, f, val, lastVal, msg.PartInfo.PartitionID, msg.PartInfo.Offset)
-	//if err != nil {
-	//	return err
-	//}
-	//if val <= lastVal {
-	//	log.Infof("%p partition %d offset %d received duplicate expected %d got %d for key %s",
-	//		c, msg.PartInfo.PartitionID, msg.PartInfo.Offset, lastVal+1, val, string(msg.Key))
-	//	return nil
-	//} else if val != lastVal+1 {
-	//	return errors.Errorf("%p partition %d offset %d received key out of order expected %d got %d for key %s",
-	//		c, msg.PartInfo.PartitionID, msg.PartInfo.Offset, lastVal+1, val, string(msg.Key))
-	//}
-	//c.lastKeysMap[sKey] = val
-	//c.consumedCount++
+	if val <= lastVal {
+		// Duplicates are allowable when rebalance occurs
+		log.Warnf("%p partition %d offset %d received duplicate expected %d got %d for key %s",
+			c, msg.PartInfo.PartitionID, msg.PartInfo.Offset, lastVal+1, val, string(msg.Key))
+		return nil
+	} else if val != lastVal+1 {
+		return errors.Errorf("%p partition %d offset %d received key out of order expected %d got %d for key %s",
+			c, msg.PartInfo.PartitionID, msg.PartInfo.Offset, lastVal+1, val, string(msg.Key))
+	}
+	c.lastKeysMap[sKey] = val
+	c.consumedCount++
 	//log.Infof("consumed count is now %d", c.consumedCount)
 	return nil
 }

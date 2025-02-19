@@ -163,7 +163,7 @@ func (c *Cache) GenerateOffsets(infos []GenerateOffsetTopicInfo) ([]OffsetTopicI
 	c.reorderLock.Lock()
 	defer c.reorderLock.Unlock()
 	c.offsetsMap[seq] = res
-	log.Infof("%p returning sequence %d", c, seq)
+	//log.Infof("%p returning sequence %d", c, seq)
 	return res, seq, nil
 }
 
@@ -386,14 +386,14 @@ func (c *Cache) MaybeReleaseOffsets(sequence int64) error {
 	}
 	c.reorderLock.Lock()
 	defer c.reorderLock.Unlock()
-	log.Infof("in MaybeReleaseOffsets after reorderLock")
+	//log.Infof("in MaybeReleaseOffsets after reorderLock")
 	if sequence < c.lowestAcceptableSequence {
-		log.Infof("ignoring sequence %d as lower than last acceptable %d", sequence, c.lowestAcceptableSequence)
+		//log.Infof("ignoring sequence %d as lower than last acceptable %d", sequence, c.lowestAcceptableSequence)
 		// Ignore - offsets will already have been released -this is OK, the locking ensures that the table must have
 		// been pushed *before* the offsets were released
 		return nil
 	}
-	log.Infof("%p maybereleaseoffsets %d lastreleased %d len heap %d", c, sequence, c.lastReleasedSequence, len(c.offsHeap))
+	//log.Infof("%p maybereleaseoffsets %d lastreleased %d len heap %d", c, sequence, c.lastReleasedSequence, len(c.offsHeap))
 	var infos []OffsetTopicInfo
 	if sequence == c.lastReleasedSequence+1 && len(c.offsHeap) == 0 {
 		// happy path - avoid heap
@@ -438,17 +438,17 @@ func (c *Cache) MaybeReleaseOffsets(sequence int64) error {
 		for _, holder := range c.offsHeap {
 			sb.WriteString(fmt.Sprintf("seq:%d ", holder.seq))
 		}
-		log.Infof("%p after mayberelease last seq %d tables in heap: %s", c, c.lastReleasedSequence, sb.String())
+		//log.Infof("%p after mayberelease last seq %d tables in heap: %s", c, c.lastReleasedSequence, sb.String())
 	} else {
-		log.Infof("%p after mayberelease last seq %d heap is: %v", c, c.lastReleasedSequence, c.offsHeap)
+		//log.Infof("%p after mayberelease last seq %d heap is: %v", c, c.lastReleasedSequence, c.offsHeap)
 	}
 	return nil
 }
 
 func (c *Cache) updateLastReadable(infos []OffsetTopicInfo) error {
-	if len(infos) == 0 {
-		log.Infof("no lros to update")
-	}
+	//if len(infos) == 0 {
+	//	log.Infof("no lros to update")
+	//}
 	for _, topicInfo := range infos {
 		offs, exists, err := c.getTopicOffsets(topicInfo.TopicID)
 		if err != nil {
@@ -458,7 +458,7 @@ func (c *Cache) updateLastReadable(infos []OffsetTopicInfo) error {
 			log.Warnf("updateLastReadable - unknown topic id %d", topicInfo.TopicID)
 		} else {
 			for _, partInfo := range topicInfo.PartitionInfos {
-				log.Infof("setting lro for topic %d partition %d to %d", topicInfo.TopicID, partInfo.PartitionID, partInfo.Offset)
+				//log.Infof("setting lro for topic %d partition %d to %d", topicInfo.TopicID, partInfo.PartitionID, partInfo.Offset)
 				offs[partInfo.PartitionID].setLastReadableOffset(partInfo.Offset)
 			}
 		}

@@ -15,7 +15,7 @@ type KafkaGoProducer struct {
 }
 
 func NewKafkaGoProducer(address string, tlsEnabled bool, serverCertFile string, clientCertFile string,
-	clientPrivateKeyFile string, compressionType compress.CompressionType) (Producer, error) {
+	clientPrivateKeyFile string, compressionType compress.CompressionType, az string) (Producer, error) {
 	cm := kafkago.ConfigMap{
 		"partitioner":        "murmur2_random", // This matches the default hash algorithm we use, and same as Java client
 		"bootstrap.servers":  address,
@@ -23,10 +23,11 @@ func NewKafkaGoProducer(address string, tlsEnabled bool, serverCertFile string, 
 		"enable.idempotence": "true",
 		"compression.type":   compressionType.String(),
 		"linger.ms":          10,
+		"client.id":          fmt.Sprintf("tek_az=%s", az),
 		//"debug":              "all",
 	}
 	if tlsEnabled {
-		cm = configureConfigureForTls(cm, serverCertFile, clientCertFile, clientPrivateKeyFile)
+		cm = configureForTls(cm, serverCertFile, clientCertFile, clientPrivateKeyFile)
 	}
 	producer, err := kafkago.NewProducer(&cm)
 	if err != nil {
@@ -78,24 +79,26 @@ type KafkaGoConsumer struct {
 	uncommitted map[int32]kafkago.TopicPartition
 }
 
-func NewKafkaGoConsumer(address string, groupID string, tlsEnabled bool, serverCertFile string, clientCertFile string, clientPrivateKeyFile string) (Consumer, error) {
+func NewKafkaGoConsumer(address string, groupID string, tlsEnabled bool, serverCertFile string, clientCertFile string,
+	clientPrivateKeyFile string, az string) (Consumer, error) {
 	cm := kafkago.ConfigMap{
 		"bootstrap.servers":        address,
 		"group.id":                 groupID,
 		"auto.offset.reset":        "earliest",
 		"enable.auto.commit":       false,
 		"enable.auto.offset.store": false,
+		"client.id":                fmt.Sprintf("tek_az=%s", az),
 		//"go.application.rebalance.enable": true,
-		"debug": "all",
+		//"debug": "all",
 	}
 	if tlsEnabled {
-		cm = configureConfigureForTls(cm, serverCertFile, clientCertFile, clientPrivateKeyFile)
+		cm = configureForTls(cm, serverCertFile, clientCertFile, clientPrivateKeyFile)
 	}
 	consumer, err := kafkago.NewConsumer(&cm)
 	if err != nil {
 		return nil, err
 	}
-	log.Infof("consumer %s has consumer group %s", consumer.String(), groupID)
+	//log.Infof("consumer %s has consumer group %s", consumer.String(), groupID)
 
 	return &KafkaGoConsumer{consumer: consumer, uncommitted: map[int32]kafkago.TopicPartition{}}, nil
 }
@@ -175,7 +178,7 @@ func (k *KafkaGoConsumer) Commit() error {
 		}
 	}
 	_, err := k.consumer.Commit()
-	k.uncommitted = nil
+	k.uncommitted = map[int32]kafkago.TopicPartition{}
 	return err
 }
 
@@ -183,7 +186,7 @@ func (k *KafkaGoConsumer) Close() error {
 	return k.consumer.Close()
 }
 
-func configureConfigureForTls(cm kafkago.ConfigMap, serverCertFile string, clientCertFile string, clientPrivateKeyFile string) kafkago.ConfigMap {
+func configureForTls(cm kafkago.ConfigMap, serverCertFile string, clientCertFile string, clientPrivateKeyFile string) kafkago.ConfigMap {
 	cm["security.protocol"] = "ssl"
 	cm["ssl.ca.location"] = serverCertFile
 	if clientCertFile != "" {

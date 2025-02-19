@@ -87,7 +87,7 @@ func (k *kafkaHandler) HandleOffsetCommitRequest(_ *kafkaprotocol.RequestHeader,
 
 func (k *kafkaHandler) HandleOffsetFetchRequest(_ *kafkaprotocol.RequestHeader, req *kafkaprotocol.OffsetFetchRequest,
 	completionFunc func(resp *kafkaprotocol.OffsetFetchResponse) error) error {
-	log.Infof("agent %d %s received offsetfetch request", k.agent.MemberID(), k.agent.cfg.KafkaListenerConfig.Address)
+	//log.Infof("agent %d %s received offsetfetch request", k.agent.MemberID(), k.agent.cfg.KafkaListenerConfig.Address)
 	resp, err := k.agent.groupCoordinator.OffsetFetch(k.authContext, req)
 	if err != nil {
 		return err

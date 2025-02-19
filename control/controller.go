@@ -188,7 +188,7 @@ func (c *Controller) MembershipChanged(thisMemberID int32, newState cluster.Memb
 	if len(newState.Members) > 0 && newState.Members[0].ID == thisMemberID {
 		// This controller is activating as leader
 		if c.lsmHolder == nil {
-			log.Infof("%p controller %d activating as leader, newState %v", c, thisMemberID, newState)
+			//log.Infof("%p controller %d activating as leader, newState %v", c, thisMemberID, newState)
 			lsmHolder := NewLsmHolder(c.cfg.ControllerMetaDataBucketName, c.cfg.ControllerMetaDataKey, c.objStoreClient,
 				c.cfg.LsmStateWriteInterval, c.cfg.LsmConf)
 			if err := lsmHolder.Start(); err != nil {
@@ -318,7 +318,7 @@ func (c *Controller) handleRegisterL0Table(_ *transport.ConnectionContext, reque
 	regBatch := lsm.RegistrationBatch{
 		Registrations: []lsm.RegistrationEntry{req.RegEntry},
 	}
-	log.Infof("%p controlller in handleRegisterL0Table about to call ApplyLsmChanges sequence %d", c, req.Sequence)
+	//log.Infof("%p controlller in handleRegisterL0Table about to call ApplyLsmChanges sequence %d", c, req.Sequence)
 
 	if err := c.beforeApplyChanges(); err != nil {
 		return responseWriter(nil, err)
@@ -327,9 +327,9 @@ func (c *Controller) handleRegisterL0Table(_ *transport.ConnectionContext, reque
 	return c.lsmHolder.ApplyLsmChanges(regBatch, func(err error) error {
 		c.releaseOffsetsNoError(req.Sequence) // always release offsets whether or not error occurred
 		c.maybeResetOffsets()
-		log.Infof("%p in controller after ApplyLsmChanges sequence %d", c, req.Sequence)
+		//log.Infof("%p in controller after ApplyLsmChanges sequence %d", c, req.Sequence)
 		if err != nil {
-			log.Infof("%p in controller after ApplyLsmChanges sequence %d - returned err", c, req.Sequence, err)
+			//log.Infof("%p in controller after ApplyLsmChanges sequence %d - returned err", c, req.Sequence, err)
 			return responseWriter(nil, err)
 		}
 		// Send back zero byte to represent nil OK response

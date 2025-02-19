@@ -2,6 +2,7 @@ package fetcher
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"github.com/spirit-labs/tektite/acls"
 	"github.com/spirit-labs/tektite/asl/encoding"
@@ -72,8 +73,8 @@ func newFetchState(authContext *auth.Context, batchFetcher *BatchFetcher, req *k
 		}
 		//partitionMap := recentTables.getPartitionMap(topicInfo.ID)
 		for j, partitionData := range topicData.Partitions {
-			log.Infof("fetch for topic %d partition %d fetchOffset %d", topicInfo.ID, partitionData.Partition,
-				partitionData.FetchOffset)
+			//log.Infof("fetch for topic %d partition %d fetchOffset %d", topicInfo.ID, partitionData.Partition,
+			//	partitionData.FetchOffset)
 			partitionResponses[j].PartitionIndex = partitionData.Partition
 			partitionResponses[j].Records = []byte{} // client does not like nil records
 			partitionID := int(partitionData.Partition)
@@ -125,7 +126,7 @@ func (f *FetchState) read() error {
 outer:
 	for topicID, partitionFetchStates := range f.partitionStates {
 		for partitionID, partitionFetchState := range partitionFetchStates {
-			log.Infof("handling fetch for topic %d partition %d", topicID, partitionID)
+			//log.Infof("handling fetch for topic %d partition %d", topicID, partitionID)
 			var err error
 			var wouldExceedPartitionMax bool
 			wouldExceedRequestMax, wouldExceedPartitionMax, err = partitionFetchState.read()
@@ -174,7 +175,7 @@ outer:
 		return nil
 	}
 	if f.timeoutTimer == nil {
-		log.Infof("request will timeout after %d ms", f.req.MaxWaitMs)
+		//log.Infof("request will timeout after %d ms", f.req.MaxWaitMs)
 		// Set a timeout if we haven't already set one - as we need to wait
 		f.timeoutTimer = time.AfterFunc(time.Duration(f.req.MaxWaitMs)*time.Millisecond, f.timeout)
 	}
@@ -216,9 +217,9 @@ func (f *FetchState) sendResponse() error {
 func (f *FetchState) timeout() {
 	f.lock.Lock()
 	defer f.lock.Unlock()
-	log.Infof("sending response on timeout")
+	//log.Infof("sending response on timeout")
 
-	log.Infof("req min bytes is %d", f.req.MinBytes)
+	//log.Infof("req min bytes is %d", f.req.MinBytes)
 
 	//if f.bytesFetched < int(f.req.MinBytes) {
 	//	fixme
@@ -288,7 +289,6 @@ func (p *PartitionFetchState) read() (wouldExceedRequestMax bool, wouldExceedPar
 		partitionID: p.partitionID,
 		cl:          cl,
 	}
-	log.Infof("%d %p fetching for partition %d from offset %d keyStart %v keyEnd %v", fid, p, p.partitionID, p.fetchOffset, keyStart, keyEnd)
 	iter, err := queryutils.CreateIteratorForKeyRange2(keyStart, keyEnd, &queryGetter, p.fs.bf.tableGetter, true)
 	if err != nil {
 		log.Errorf("%d fetch returned err 3 %v", fid, err)
@@ -297,8 +297,9 @@ func (p *PartitionFetchState) read() (wouldExceedRequestMax bool, wouldExceedPar
 	lastOffset := queryGetter.lro
 	p.partitionFetchResp.HighWatermark = lastOffset
 	p.partitionFetchResp.LastStableOffset = lastOffset
-	log.Infof("%d lro is %d", fid, queryGetter.lro)
+	//log.Infof("%d lro is %d", fid, queryGetter.lro)
 	var batches []byte
+	first := true
 	for {
 		ok, kv, err := iter.Next()
 		if err != nil {
@@ -308,7 +309,7 @@ func (p *PartitionFetchState) read() (wouldExceedRequestMax bool, wouldExceedPar
 			return false, false, err
 		}
 		if !ok {
-			log.Infof("%d %p iterating batches no more data", fid, p)
+			//log.Infof("%d %p iterating batches no more data", fid, p)
 			break
 		}
 		// The sstable can contain record batches for other partitions - we filter those out
@@ -316,37 +317,55 @@ func (p *PartitionFetchState) read() (wouldExceedRequestMax bool, wouldExceedPar
 			continue
 		}
 		baseOffset := kafkaencoding.BaseOffset(kv.Value)
-		if baseOffset != p.fetchOffset {
-			panic(fmt.Sprintf("fetch on partition %d for fetchOffset, baseOffset is %d", p.partitionID, p.fetchOffset, baseOffset))
-		}
+		//// verify base offset on key is same as batch
+		//keyOffset, _ := encoding.KeyDecodeInt(kv.Key, 17)
+		//if keyOffset != baseOffset {
+		//	log.Errorf("%d fetching for partition %d from offset %d keyStart %v keyEnd %v", fid, p.partitionID,
+		//		p.fetchOffset, keyStart, keyEnd)
+		//	panic(fmt.Sprintf("%d batch key offset is %d base offset is %d", fid, keyOffset, baseOffset))
+		//}
+		//
+		//if first && baseOffset != p.fetchOffset {
+		//	panic(fmt.Sprintf("%d fetch on partition %d for fetchOffset %d, baseOffset is %d", fid, p.partitionID, p.fetchOffset, baseOffset))
+		//}
+		//first = false
 		lastOffsetDelta := int64(kafkaencoding.LastOffsetDelta(kv.Value))
 		//log.Infof("%p iterating batches firstoffset %d lastoffsetDelta %d key %v", p, baseOffset, lastOffsetDelta, kv.Key)
 		// It's possible that multiple batches have been compacted into the same sstable and we've already seen
 		// some of those batches - so we need to filter them out. we don't currently compact multiple batches into
 		lastOffsetInBatch := baseOffset + lastOffsetDelta
-		if lastOffsetInBatch < p.fetchOffset {
-			// Ignore - already been seen
-			log.Infof("%d %p ignoring", fid, p)
-			continue
-		}
+		//if lastOffsetInBatch < p.fetchOffset {
+		//	// Ignore - already been seen
+		//	//log.Infof("%d %p ignoring", fid, p)
+		//	continue
+		//}
 		if lastOffsetInBatch > queryGetter.lro {
-			// Not readable
+			// Not readable, we know if the last offset in a batch is not readable then no offsets in the batch are
+			// readable, as we release them a table at a time.
 			continue
 		}
 		value := common.RemoveValueMetadata(kv.Value)
+
+		if first {
+			if baseOffset < p.fetchOffset {
+				// The fetch offset does not align with first offset in batch so we need to trim leading records
+				value = trimLeadingRecordsFromBatch(value, p.fetchOffset)
+			}
+			first = false
+		}
 		// Note that batchSize is the *uncompressed* size - unlike Kafka which uses the compressed size
 		batchSize := len(value)
 		if !p.fs.first {
 			if p.bytesFetched+batchSize > int(p.partitionFetchReq.PartitionMaxBytes) {
 				// Would exceed partition max size
 				wouldExceedPartitionMax = true
-				log.Infof("%d %p wouldExceedPartitionMax", fid, p)
+				//log.Infof("%d %p wouldExceedPartitionMax", fid, p)
 				break
 			}
 			if p.fs.bytesFetched+batchSize > int(p.fs.req.MaxBytes) {
 				// would exceed total response max size
 				wouldExceedRequestMax = true
-				log.Infof("%d %p wouldExceedRequestMax", fid, p)
+				//log.Infof("%d %p wouldExceedRequestMax", fid, p)
 				break
 			}
 		}
@@ -360,10 +379,10 @@ func (p *PartitionFetchState) read() (wouldExceedRequestMax bool, wouldExceedPar
 		}
 		batches = append(batches, value...)
 
-		msgs := kafkaencoding.BatchToRawMessages(value)
-		for _, msg := range msgs {
-			log.Infof("%d sending back msg partition %d offset %d", fid, p.partitionID, msg.Offset)
-		}
+		//msgs := kafkaencoding.BatchToRawMessages(value)
+		//for _, msg := range msgs {
+		//	log.Infof("%d sending back msg partition %d offset %d", fid, p.partitionID, msg.Offset)
+		//}
 
 		p.fs.first = false
 		p.bytesFetched += batchSize
@@ -374,8 +393,43 @@ func (p *PartitionFetchState) read() (wouldExceedRequestMax bool, wouldExceedPar
 		p.partitionFetchResp.Records = append(p.partitionFetchResp.Records, batches...)
 	}
 
-	log.Infof("%d partition fetch complete - sent lastOffset %d", fid, lastOffset)
+	//log.Infof("%d partition fetch complete - sent lastOffset %d", fid, lastOffset)
 	return
+}
+
+func trimLeadingRecordsFromBatch(bytes []byte, fetchOffset int64) []byte {
+	baseOffset := int64(binary.BigEndian.Uint64(bytes))
+	log.Infof("trimming leading records from batch fetchOffset %d baseOffset %d", fetchOffset, baseOffset)
+	baseTimeStamp := int64(binary.BigEndian.Uint64(bytes[27:]))
+	numRecords := int(binary.BigEndian.Uint32(bytes[57:]))
+	numToTrim := int(fetchOffset - baseOffset)
+	off := 61
+	outBaseTimestamp := int64(0)
+	outMaxTimestamp := int64(0)
+	for i := 0; i < numToTrim; i++ {
+		recordStart := off
+		recordLength, recordLengthBytesRead := binary.Varint(bytes[off:])
+		off += recordLengthBytesRead
+		off++ // skip past attributes
+		timestampDelta, _ := binary.Varint(bytes[off:])
+		recordTimestamp := baseTimeStamp + timestampDelta
+		if outBaseTimestamp == 0 {
+			outBaseTimestamp = recordTimestamp
+		}
+		if recordTimestamp > outMaxTimestamp {
+			outMaxTimestamp = recordTimestamp
+		}
+		off = recordStart + int(recordLength) + recordLengthBytesRead
+	}
+	newBuff := make([]byte, len(bytes)-(off-61))
+	copy(newBuff, bytes[:61])
+	copy(newBuff[61:], bytes[off:])
+	kafkaencoding.SetBaseTimestamp(newBuff, outBaseTimestamp)
+	kafkaencoding.SetMaxTimestamp(newBuff, outMaxTimestamp)
+	kafkaencoding.SetNumRecords(newBuff, numRecords-numToTrim)
+	kafkaencoding.SetBatchLength(newBuff, int32(len(newBuff)-12))
+	kafkaencoding.CalcAndSetCrc(newBuff)
+	return newBuff
 }
 
 func (p *PartitionFetchState) compress(batch []byte) ([]byte, error) {

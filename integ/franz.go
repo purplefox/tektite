@@ -17,7 +17,7 @@ type FranzProducer struct {
 }
 
 func NewFranzProducer(address string, tlsEnabled bool, serverCertFile string, clientCertFile string,
-	clientPrivateKeyFile string, compressionType compress.CompressionType) (Producer, error) {
+	clientPrivateKeyFile string, compressionType compress.CompressionType, az string) (Producer, error) {
 	var err error
 	var client *kgo.Client
 	var compressionCodec kgo.CompressionCodec
@@ -98,7 +98,7 @@ type FranzConsumer struct {
 }
 
 func NewFranzConsumer(address string, groupID string, tlsEnabled bool, serverCertFile string,
-	clientCertFile string, clientPrivateKeyFile string) (Consumer, error) {
+	clientCertFile string, clientPrivateKeyFile string, az string) (Consumer, error) {
 	logger := kgo.BasicLogger(os.Stdout, kgo.LogLevelDebug, func() string {
 		return ""
 	})
